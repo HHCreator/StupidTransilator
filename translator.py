@@ -1,4 +1,4 @@
-"""English -> Chinese translator using Google Translate (online).
+"""English -> Chinese translator using Google Translate (online), plus Bing for 文言文.
 
 By default it translates in a "stupid" way: every word is translated on its own,
 with no context, and each word uses a real but less common meaning that does not
@@ -9,6 +9,7 @@ Usage:
     py translator.py --rarity 2.5 "Hello"     # same, with rarer meanings (0 = common, 3 = obscure)
     py translator.py --plain "Hello world"    # word by word, usual meanings
     py translator.py --proper "Hello world"   # normal whole-sentence translation
+    py translator.py --classical "Hello"      # correct translation in Classical Chinese (文言文)
     py translator.py                          # interactive mode, blank line or Ctrl+C to quit
 """
 
@@ -17,6 +18,7 @@ import math
 import re
 import sys
 import urllib.parse
+import http.cookiejar
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
@@ -75,6 +77,55 @@ def _translate_words_chrome_ex(words, source, target, timeout):
 
 def _translate_words_gtx(words, source, target, timeout):
     return [_translate_gtx(word, source, target, timeout) for word in words]
+
+
+# Google Translate has no Classical Chinese, so classical mode uses Bing Translator's web
+# page instead ("lzh" = 文言文). Bing needs a session (cookies + tokens from its page),
+# which we fetch once and reuse.
+_bing_session = None
+BING_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/130.0 Safari/537.36",
+}
+
+
+def _get_bing_session(timeout):
+    global _bing_session
+    if _bing_session is None:
+        opener = urllib.request.build_opener(
+            urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+        request = urllib.request.Request("https://www.bing.com/translator", headers=BING_HEADERS)
+        html = opener.open(request, timeout=timeout).read().decode("utf-8", "ignore")
+        ig = re.search(r'IG:"([^"]+)"', html)
+        iid = re.search(r'data-iid="([^"]+)"', html)
+        abuse = re.search(r'params_AbusePreventionHelper\s*=\s*\[(\d+),"([^"]+)"', html)
+        if not (ig and iid and abuse):
+            raise RuntimeError("Could not read a session from the Bing Translator page")
+        _bing_session = (opener, ig.group(1), iid.group(1), abuse.group(1), abuse.group(2))
+    return _bing_session
+
+
+def translate_classical(text, source="en", timeout=15):
+    """Translate text correctly into Classical Chinese (文言文) using Bing Translator."""
+    global _bing_session
+    for attempt in range(2):
+        opener, ig, iid, key, token = _get_bing_session(timeout)
+        body = urllib.parse.urlencode(
+            {"fromLang": source, "to": "lzh", "text": text, "key": key, "token": token}).encode()
+        request = urllib.request.Request(
+            f"https://www.bing.com/ttranslatev3?isVertical=1&IG={ig}&IID={iid}",
+            data=body,
+            headers={**BING_HEADERS, "Content-Type": "application/x-www-form-urlencoded"},
+        )
+        try:
+            data = json.loads(opener.open(request, timeout=timeout).read().decode("utf-8"))
+            result = data[0]["translations"][0]["text"]
+            # Bing mixes in ASCII punctuation and spaces, so switch to Chinese punctuation
+            return "".join(PUNCTUATION.get(c, c) for c in result if c != " ")
+        except Exception as exc:
+            _bing_session = None  # the session may have expired, get a fresh one and retry
+            error = exc
+    raise RuntimeError(f"Bing Translator request failed: {error}")
 
 
 PUNCTUATION = {",": "，", ".": "。", "!": "！", "?": "？", ":": "：", ";": "；"}
@@ -176,8 +227,11 @@ def main():
         i = args.index("--rarity")
         target_rarity = float(args[i + 1])
         del args[i:i + 2]
-    args = [a for a in args if a not in ("--proper", "--plain")]
-    if proper:
+    classical = "--classical" in args
+    args = [a for a in args if a not in ("--proper", "--plain", "--classical")]
+    if classical:
+        convert, mode = translate_classical, "Classical Chinese"
+    elif proper:
         convert, mode = translate, "proper"
     elif plain:
         convert, mode = (lambda text: translate_word_by_word(text, rare=False)), "word by word"
