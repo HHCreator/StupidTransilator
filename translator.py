@@ -279,7 +279,7 @@ WORDS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "w
 SHORT_PARTS = {"a", "i", "an", "as", "at", "be", "by", "do", "go", "he", "if", "in", "is",
                "it", "me", "my", "no", "of", "on", "or", "so", "to", "up", "us", "we"}
 NOT_PARTS = {"ing", "ion", "ions", "ted", "ent", "est", "ers", "ist", "ate", "ant", "ous",
-             "ive", "ies", "ism", "ful", "less", "ness", "ment", "tion", "able", "ure"}
+             "ive", "ies", "ism", "ful", "less", "ness", "ment", "tion", "able", "ure", "ana"}
 _part_words = None
 
 
@@ -289,7 +289,7 @@ def _load_part_words():
         with open(WORDS_FILE, encoding="utf-8") as f:
             words = {line.strip().lower() for line in f if line.strip()}
         _part_words = {w for w in words if (len(w) >= 3 or w in SHORT_PARTS) and w not in NOT_PARTS}
-        _part_words |= SHORT_PARTS - {"a", "i"}  # "a" and "i" alone make silly splits like "a"+"go"
+        _part_words -= {"a", "i"}  # "a" and "i" alone make silly splits like "a"+"go", "a"+"sleep"
     return _part_words
 
 
