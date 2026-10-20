@@ -1,12 +1,12 @@
 """English -> Chinese translator using Google Translate (online), plus Bing for 文言文.
 
 By default it translates in a "stupid" way: every word is translated on its own,
-with no context, and each word uses a real but less common meaning that does not
-fit the sentence. TARGET_RARITY below (or --rarity) sets how far off the meanings go.
+with no context. Some words keep their natural meaning so the sentence still flows and
+others get a far-off meaning; TARGET_RARITY (or --rarity) sets the average.
 
 Usage:
     py translator.py "Hello world"            # stupid: word by word, wrong-but-real meanings
-    py translator.py --rarity 2.5 "Hello"     # same, with rarer meanings (0 = common, 3 = obscure)
+    py translator.py --rarity 2.5 "Hello"     # same, rarer on average (0 = natural, 3 = obscure)
     py translator.py --plain "Hello world"    # word by word, usual meanings
     py translator.py --proper "Hello world"   # normal whole-sentence translation
     py translator.py --classical "Hello"      # correct translation in Classical Chinese (文言文)
@@ -16,6 +16,7 @@ Usage:
 import json
 import math
 import os
+import random
 import re
 import sys
 import urllib.parse
@@ -181,11 +182,13 @@ def translate_classical(text, source="en", timeout=15):
 PUNCTUATION = {",": "，", ".": "。", "!": "！", "?": "？", ":": "：", ";": "；"}
 
 
-# How rare the chosen meaning should be. Each dictionary meaning gets a rarity weight of
+# How rare the chosen meanings should be. Each dictionary meaning gets a rarity weight of
 # -log10(frequency): 0 = the only meaning, 1 = used 10% of the time, 2 = 1%, 3 = 0.1%.
-# We pick the meaning whose weight is closest to TARGET_RARITY, skip anything rarer than
-# MAX_RARITY (too obscure), and skip meanings the proper sentence translation already uses.
-TARGET_RARITY = 1.5
+# The meaning that fits the sentence counts as rarity 0. Rarity is spread unevenly over
+# the words: some keep their fitting meaning so the sentence still flows, others get a far
+# off meaning, and the AVERAGE over the sentence's words is close to TARGET_RARITY.
+# Meanings rarer than MAX_RARITY are too obscure and never used.
+TARGET_RARITY = 0.8
 MAX_RARITY = 3.0
 
 
@@ -315,15 +318,26 @@ def standalone_meaning(word, source="en", target="zh-CN", timeout=10):
     return min(meanings)[1] if meanings else None
 
 
-def pick_wrong_meaning(meanings, avoid, target_rarity=TARGET_RARITY, max_rarity=MAX_RARITY):
-    """Pick a well-known meaning that is not the one the sentence actually needs."""
-    usable = [
-        (rarity, meaning) for rarity, meaning in meanings
-        if rarity <= max_rarity and not any(meaning in a or a in meaning for a in avoid)
-    ]
-    if not usable:
-        return None
-    return min(usable, key=lambda m: abs(m[0] - target_rarity))[1]
+def spread_rarity(options, target_rarity=TARGET_RARITY, max_rarity=MAX_RARITY, rng=random,
+                  stats=None):
+    """Pick one meaning per word so the average rarity is about target_rarity.
+
+    options maps word -> [(rarity, meaning), ...], where rarity 0 is the meaning that fits
+    the sentence. Words are visited in random order; each takes a random share of the
+    remaining rarity budget, so a few words go far off while the rest stay natural.
+    """
+    budget = target_rarity * len(options)
+    picks = {}
+    for word in rng.sample(list(options), len(options)):
+        # Never overspend the budget, so the average doesn't end up above the target
+        choices = [o for o in options[word] if o[0] <= min(max_rarity, budget)] or options[word][:1]
+        wanted = min(budget, rng.uniform(0, max_rarity))
+        rarity, meaning = min(choices, key=lambda o: abs(o[0] - wanted))
+        picks[word] = meaning
+        budget -= rarity
+    if stats is not None and options:
+        stats["average_rarity"] = target_rarity - budget / len(options)
+    return picks
 
 
 def translate_word_by_word(text, source="en", target="zh-CN", timeout=10, rare=True,
@@ -332,7 +346,7 @@ def translate_word_by_word(text, source="en", target="zh-CN", timeout=10, rare=T
 
     Compound words are split into parts first (see split_compound). Past tense forms that are also words on their own use that word's meaning
     (see IRREGULAR_PAST_FORMS). With rare=True every other word uses a less common
-    meaning that does not fit the sentence (see TARGET_RARITY), when the dictionary has one.
+    meaning: some words stay natural and some go far off, averaging TARGET_RARITY.
     """
     tokens = re.findall(r"[A-Za-z0-9']+|[^\sA-Za-z0-9']", text)
     # Split compound words into their parts and translate each part on its own
@@ -364,20 +378,24 @@ def translate_word_by_word(text, source="en", target="zh-CN", timeout=10, rare=T
         # The proper translation tells us which meanings fit the sentence, so we can avoid them
         proper = translate(text, source, target, timeout)
 
-        def lookup_rare(word):
-            if standalone.get(word):
-                return None  # already uses the standalone word's meaning
+        def word_options(word):
+            # The fitting meaning (rarity 0) plus every other dictionary meaning
             try:
                 meanings = dictionary_meanings(word, source, target, timeout)
             except Exception:
-                return None  # keep the usual translation for this word
-            avoid = [m for m in (lookup[word],) if m] + [m for _, m in meanings if m in proper]
-            return pick_wrong_meaning(meanings, avoid, target_rarity)
+                meanings = []  # keep the usual translation for this word
+            fitting = [m for _, m in meanings if m in proper]
+            natural = max(fitting, key=len) if fitting else lookup[word]
+            avoid = [natural, lookup[word]]
+            others = [(r, m) for r, m in meanings
+                      if not any(m in a or a in m for a in avoid if a)]
+            return [(0.0, natural)] + others
 
+        # Past tense forms already use their standalone meaning, so they sit this out
+        rare_words = [w for w in words if not standalone.get(w)]
         with ThreadPoolExecutor(max_workers=4) as pool:
-            for word, rare_term in zip(words, pool.map(lookup_rare, words)):
-                if rare_term:
-                    lookup[word] = rare_term
+            options = dict(zip(rare_words, pool.map(word_options, rare_words)))
+        lookup.update(spread_rarity(options, target_rarity))
 
     return "".join(lookup.get(t, PUNCTUATION.get(t, t)) for t in tokens)
 
