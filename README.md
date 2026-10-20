@@ -28,3 +28,7 @@ meaning that fits the sentence so it still reads fluently, while others get far-
 meanings. The average rarity over the sentence matches `TARGET_RARITY` (or `--rarity`).
 Rarity is -log10 of how often Google says a meaning is used: 0 = natural, 1 = 10%,
 2 = 1%, 3 = 0.1%. Results change from run to run.
+
+Single characters that can't stand alone as a word, like 次 (a measure word), are swapped
+for their standalone word, so "time" can come out as 次数. The table is `STANDALONE_FORMS`
+in `translator.py`, and `EXTRA_MEANINGS` adds meanings Google's dictionary leaves out.

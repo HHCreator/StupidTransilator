@@ -192,6 +192,26 @@ TARGET_RARITY = 0.8
 MAX_RARITY = 3.0
 CAPITALIZED_RARITY = 1.0
 
+# Single characters that don't stand alone as a word in Chinese (measure words and bound
+# characters). When the stupid mode picks one, it uses the standalone word instead, the
+# way 次 on its own becomes 次数. Add more here as you find them.
+STANDALONE_FORMS = {
+    "次": "次数", "个": "个数", "遍": "遍数", "趟": "趟数", "倍": "倍数", "度": "度数",
+    "偶": "偶数", "单": "清单", "善": "善良", "良": "良好", "魔": "魔鬼", "妖": "妖怪",
+    "寿": "寿命", "命": "生命", "期": "期间", "时": "时候", "候": "时候", "辰": "时辰",
+    "秋": "秋天", "途": "途径", "道": "道路", "方": "方向", "法": "方法", "样": "样子",
+    "戏": "戏剧", "剧": "戏剧", "演": "表演", "谱": "乐谱", "乐": "乐曲", "啼": "啼哭",
+    "鸣": "鸣叫", "喊": "喊叫", "号": "号码", "饥": "饥饿", "馁": "气馁", "汉": "汉族",
+    "世": "世界", "身": "身体", "怪": "怪物", "甚": "甚至",
+    "便": "方便", "然": "然而", "目": "目录", "表": "表格", "玩": "玩耍",
+}
+
+# Meanings Google's dictionary leaves out, such as the measure-word sense of "time"
+# ("three times" = 三次), as (rarity, meaning).
+EXTRA_MEANINGS = {
+    "time": [(1.5, "次")],
+}
+
 
 # Irregular past tense / past participle forms. When one of these is also a word on its
 # own (saw, left, rose, felt, found...), the stupid modes use that word's own meaning
@@ -396,9 +416,14 @@ def translate_word_by_word(text, source="en", target="zh-CN", timeout=10, rare=T
             fitting = [m for _, m in meanings if m in proper]
             natural = max(fitting, key=len) if fitting else lookup[word]
             avoid = [natural, lookup[word]]
-            others = [(r, m) for r, m in meanings
-                      if not any(m in a or a in m for a in avoid if a)]
-            return [(0.0, natural)] + others
+            meanings += [(r, m) for r, m in EXTRA_MEANINGS.get(word.lower(), [])]
+            others = {}
+            for r, m in meanings:
+                alone = STANDALONE_FORMS.get(m, m)  # 次 -> 次数
+                if any(x in a or a in x for x in (m, alone) for a in avoid if a):
+                    continue
+                others[alone] = min(r, others.get(alone, r))
+            return [(0.0, natural)] + [(r, m) for m, r in others.items()]
 
         # Past tense forms already use their standalone meaning, so they sit this out
         rare_words = [w for w in words if not standalone.get(w)]
