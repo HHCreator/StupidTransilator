@@ -52,3 +52,7 @@ py learn.py --links 50 "League of Legends"    # also learn up to 50 pages each o
 ```
 
 Learned entries go to `data/memes_learned.json`. Put your own in `data/memes.json`; they win.
+
+Other stupid-mode rules: contractions are expanded first (can't -> can not), "the" is dropped
+(Chinese has no articles), compound parts keep their natural meaning (firepower -> 火 + 力量),
+and words of 4 letters or fewer are never split (into stays 进入).

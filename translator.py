@@ -323,11 +323,16 @@ def _is_real_word(part, timeout=10):
     return _is_real_word_cache[part]
 
 
+MIN_SPLIT_LETTERS = 4  # words this short or shorter are never split
+
+
 def split_compound(word, timeout=10):
     """Split a word into two or more real words (butterfly -> [butter, fly]), or return
     None if it can't be split. Prefers the fewest parts, then the longest shortest part."""
-    parts_set = set(_load_part_words())
     w = word.lower()
+    if len(w) <= MIN_SPLIT_LETTERS:
+        return None  # short words like "into" stay whole
+    parts_set = set(_load_part_words())
     while True:
         split = _best_split(w, parts_set)
         if split is None:
@@ -446,6 +451,27 @@ def spread_rarity(options, target_rarity=TARGET_RARITY, max_rarity=MAX_RARITY, r
     return picks
 
 
+# Contractions are expanded before translating, so "can't" is can + not instead of
+# Google reading it as "cant" (斜面). 's is left alone since it is often possessive.
+CONTRACTIONS = {"can't": ["can", "not"], "won't": ["will", "not"], "shan't": ["shall", "not"],
+                "ain't": ["is", "not"]}
+CONTRACTION_ENDINGS = {"n't": "not", "'m": "am", "'re": "are", "'ll": "will", "'ve": "have",
+                       "'d": "would"}
+
+# Words dropped in the stupid modes: Chinese has no articles, so "the" -> 这 reads wrong
+SKIPPED_WORDS = {"the"}
+
+
+def expand_contraction(token):
+    t = token.lower()
+    if t in CONTRACTIONS:
+        return CONTRACTIONS[t]
+    for ending, word in CONTRACTION_ENDINGS.items():
+        if t.endswith(ending) and len(t) > len(ending):
+            return [token[: -len(ending)], word]
+    return [token]
+
+
 # Memes and names: learned from Wikipedia by learn.py (data/memes_learned.json), plus your
 # own entries in data/memes.json, which win. These always replace the word in the stupid
 # modes: lol -> 英雄联盟, teses -> 滔搏们 (plural), karrigan -> 凯莉根 (near spelling).
@@ -503,16 +529,25 @@ def translate_word_by_word(text, source="en", target="zh-CN", timeout=10, rare=T
                            target_rarity=TARGET_RARITY):
     """Translate each word separately, ignoring the sentence it sits in.
 
-    Compound words are split into parts first (see split_compound). Past tense forms that are also words on their own use that word's meaning
-    (see IRREGULAR_PAST_FORMS). With rare=True every other word uses a less common
-    meaning: some words stay natural and some go far off, averaging TARGET_RARITY.
+    Contractions are expanded and "the" is dropped. Memes and names come first (see
+    meme_for), then compound words are split into parts that keep their natural meaning
+    (see split_compound). Past tense forms that are also words on their own use that
+    word's meaning (see IRREGULAR_PAST_FORMS). With rare=True every other word uses a less
+    common meaning: some words stay natural and some go far off, averaging TARGET_RARITY.
     """
     tokens = re.findall(r"[A-Za-z0-9']+|[^\sA-Za-z0-9']", text)
+    tokens = [part for t in tokens for part in expand_contraction(t)]
+    tokens = [t for t in tokens if t.lower() not in SKIPPED_WORDS]
     # Memes and names win over everything else
     memes = {t: meme_for(t) for t in tokens if re.match(r"[A-Za-z0-9']", t)}
     memes = {t: m for t, m in memes.items() if m}
     # Split compound words into their parts and translate each part on its own
-    tokens = [part for t in tokens for part in ([t] if t in memes else split_compound(t) or [t])]
+    split_tokens, compound_parts = [], set()
+    for t in tokens:
+        parts = None if t in memes else split_compound(t)
+        split_tokens += parts or [t]
+        compound_parts.update(parts or [])
+    tokens = split_tokens
     # Split parts can be memes too (playoff -> play + off -> 关)
     memes.update({t: _load_memes()[t.lower()] for t in tokens if t.lower() in _load_memes()})
     words = list(dict.fromkeys(t for t in tokens if re.match(r"[A-Za-z0-9']", t) and t not in memes))
@@ -573,7 +608,8 @@ def translate_word_by_word(text, source="en", target="zh-CN", timeout=10, rare=T
             return [(0.0, natural)] + [(r, m) for m, r in others.items()]
 
         # Past tense forms already use their standalone meaning, so they sit this out
-        rare_words = [w for w in words if not standalone.get(w)]
+        # Compound parts keep their natural meaning: the split is stupid enough already
+        rare_words = [w for w in words if not standalone.get(w) and w not in compound_parts]
         with ThreadPoolExecutor(max_workers=4) as pool:
             options = dict(zip(rare_words, pool.map(word_options, rare_words)))
         lookup.update(spread_rarity(options, target_rarity))
