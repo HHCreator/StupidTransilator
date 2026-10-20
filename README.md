@@ -32,3 +32,8 @@ Rarity is -log10 of how often Google says a meaning is used: 0 = natural, 1 = 10
 Single characters that can't stand alone as a word, like 次 (a measure word), are swapped
 for their standalone word, so "time" can come out as 次数. The table is `STANDALONE_FORMS`
 in `translator.py`, and `EXTRA_MEANINGS` adds meanings Google's dictionary leaves out.
+
+For the 3,000 most common English words, the stupid mode also finds extra meanings with a
+round trip: English -> Chinese -> English -> Chinese, keeping Chinese words whose default
+English translation is the original word ("list" -> 单子, "life" -> 辈子). The first time
+a word is seen this takes about 10 requests; results are cached in `.cache/round_trip.json`.

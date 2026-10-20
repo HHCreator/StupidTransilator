@@ -19,6 +19,7 @@ import os
 import random
 import re
 import sys
+import threading
 import urllib.parse
 import http.cookiejar
 import urllib.request
@@ -206,6 +207,16 @@ STANDALONE_FORMS = {
     "便": "方便", "然": "然而", "目": "目录", "表": "表格", "玩": "玩耍",
 }
 
+# Round trip: for common English words, look for extra meanings by going English ->
+# Chinese -> English -> Chinese, and keep Chinese words whose default English translation
+# is the original word (cry -> 哭 -> shout -> 叫声 -> "cry"). Each word costs about 10
+# requests, so it only runs for the ROUND_TRIP_TOP_WORDS most common words in
+# data/words/common_english.txt, and results are cached in .cache/round_trip.json.
+ROUND_TRIP_TOP_WORDS = 3000
+ROUND_TRIP_RARITY = 1.5
+ROUND_TRIP_BACK_WORDS = 12
+CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".cache", "round_trip.json")
+
 # Meanings Google's dictionary leaves out, such as the measure-word sense of "time"
 # ("three times" = 三次), as (rarity, meaning).
 EXTRA_MEANINGS = {
@@ -327,6 +338,80 @@ def split_compound(word, timeout=10):
         parts_set -= set(bad)  # try again without the junk parts
 
 
+_top_words = None
+_round_trip_cache = None
+_round_trip_lock = threading.Lock()  # word lookups run in parallel and share the cache
+
+
+def _dictionary(word, source, target, timeout):
+    return _get_json(
+        "https://clients5.google.com/translate_a/single",
+        {"client": "dict-chrome-ex", "sl": source, "tl": target, "dt": "bd", "q": word},
+        timeout,
+    )
+
+
+def _load_round_trip_state():
+    global _top_words, _round_trip_cache
+    if _top_words is None:
+        with open(WORDS_FILE, encoding="utf-8") as f:
+            _top_words = {line.strip().lower() for _, line in zip(range(ROUND_TRIP_TOP_WORDS), f)}
+    if _round_trip_cache is None:
+        try:
+            with open(CACHE_FILE, encoding="utf-8") as f:
+                _round_trip_cache = json.load(f)
+        except (OSError, ValueError):
+            _round_trip_cache = {}
+
+
+def round_trip_meanings(word, timeout=10):
+    """Find extra Chinese meanings of a common English word by a round trip through
+    Chinese and English (see ROUND_TRIP_TOP_WORDS). Returns a list of Chinese words."""
+    w = word.lower()
+    with _round_trip_lock:
+        _load_round_trip_state()
+    if w not in _top_words:
+        return []
+    if w in _round_trip_cache:
+        return _round_trip_cache[w]
+
+    # 1. English -> Chinese: the word's meanings, and the English words each meaning
+    #    translates back to
+    known, back = set(), []
+    for entry in _dictionary(w, "en", "zh-CN", timeout)[1] or []:
+        for term in entry[2]:
+            known.add(term[0])
+            back += [b for b in term[1] if b.lower() != w and b not in back]
+    # 2. Those English words -> Chinese again
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(lambda b: _dictionary(b, "en", "zh-CN", timeout),
+                                back[:ROUND_TRIP_BACK_WORDS]))
+    candidates = []
+    for data in results:
+        for entry in data[1] or []:
+            for term in entry[2]:
+                if term[0] not in known and term[0] not in candidates:
+                    candidates.append(term[0])
+    # 3. Keep the Chinese words whose default English translation is the original word
+    found = []
+    if candidates:
+        params = [("client", "dict-chrome-ex"), ("sl", "zh-CN"), ("tl", "en")]
+        params += [("q", c) for c in candidates]
+        outputs = _get_json("https://clients5.google.com/translate_a/t", params, timeout)
+        outputs = [o[0] if isinstance(o, list) else o for o in outputs]
+        found = [c for c, o in zip(candidates, outputs) if o.strip().lower() == w]
+
+    with _round_trip_lock:
+        _round_trip_cache[w] = found
+        try:
+            os.makedirs(os.path.dirname(CACHE_FILE), exist_ok=True)
+            with open(CACHE_FILE, "w", encoding="utf-8") as f:
+                json.dump(_round_trip_cache, f, ensure_ascii=False, indent=0)
+        except OSError:
+            pass
+    return found
+
+
 def standalone_meaning(word, source="en", target="zh-CN", timeout=10):
     """For a past tense form that is also a word (saw, left...), return that word's
     most common meaning. Returns None for other words."""
@@ -417,6 +502,10 @@ def translate_word_by_word(text, source="en", target="zh-CN", timeout=10, rare=T
             natural = max(fitting, key=len) if fitting else lookup[word]
             avoid = [natural, lookup[word]]
             meanings += [(r, m) for r, m in EXTRA_MEANINGS.get(word.lower(), [])]
+            try:
+                meanings += [(ROUND_TRIP_RARITY, m) for m in round_trip_meanings(word, timeout)]
+            except Exception:
+                pass  # the round trip is a bonus, skip it if Google says no
             others = {}
             for r, m in meanings:
                 alone = STANDALONE_FORMS.get(m, m)  # 次 -> 次数
