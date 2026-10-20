@@ -13,3 +13,7 @@ py translator.py --proper "Hello world"   # normal whole-sentence translation
 py translator.py --classical "Hello"      # correct Classical Chinese (文言文) in traditional characters, via Bing
 py translator.py                          # interactive mode, blank line to quit
 ```
+
+In both word-by-word modes, a past tense form that is also a word on its own uses that
+word's meaning: "saw" becomes 锯 (the tool), "left" becomes 左, "rose" becomes 玫瑰.
+The list of these forms is `IRREGULAR_PAST_FORMS` in `translator.py`.

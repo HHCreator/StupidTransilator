@@ -189,8 +189,31 @@ TARGET_RARITY = 1.5
 MAX_RARITY = 3.0
 
 
-def dictionary_meanings(word, source="en", target="zh-CN", timeout=10):
-    """Return [(rarity, meaning), ...] for a word from Google's dictionary data."""
+# Irregular past tense / past participle forms. When one of these is also a word on its
+# own (saw, left, rose, felt, found...), the stupid modes use that word's own meaning
+# (saw -> 锯, left -> 左) instead of the past tense of the verb (see -> 看见, leave -> 离开).
+IRREGULAR_PAST_FORMS = set("""
+    arose awoke bore born bound bent bet bit bitten bled blew bred brought broke broken
+    built burnt burst bought cast caught chose chosen clung came cost crept cut dealt dug
+    dove drew drawn dreamt drank drunk drove driven ate eaten fell fed felt fought found
+    fled flung flew flown forbade forgot forgave froze frozen got gotten gave given went
+    gone ground grew grown hung had heard hid hidden hit held hurt kept knelt knew known
+    laid led leapt learnt left lent let lay lain lit lost made meant met paid put quit
+    read rode ridden rang rung rose risen ran said saw seen sought sold sent set shook
+    shed shone shot showed shown shut sang sung sank sunk sat slept slid slung slit
+    smelt sped spent spilt spun spat split spoilt spread sprang stood stole stolen stuck
+    stung stank struck strung strove swore sworn swept swam swum swung took taken taught
+    tore torn told thought threw thrown thrust trod understood woke wore worn wove woven
+    wept won wound wrung wrote written
+""".split())
+
+
+def dictionary_meanings(word, source="en", target="zh-CN", timeout=10, standalone_only=False):
+    """Return [(rarity, meaning), ...] for a word from Google's dictionary data.
+
+    With standalone_only=True, only meanings of the word itself are kept, not meanings
+    Google lists under a different base word.
+    """
     data = _get_json(
         "https://clients5.google.com/translate_a/single",
         {"client": "dict-chrome-ex", "sl": source, "tl": target, "dt": "bd", "q": word},
@@ -203,12 +226,26 @@ def dictionary_meanings(word, source="en", target="zh-CN", timeout=10):
         base_word = entry[3]
         if base_word.endswith("-"):
             continue  # an affix like "im-" for "I'm", not the word itself
+        if standalone_only and base_word.lower() != word.lower():
+            continue
         for term in entry[2]:
             frequency = term[3] if len(term) > 3 and term[3] else 1e-9
             # Drop placeholders like "在 ... 之上" (on) so the sentence reads as one run
             meaning = term[0].replace("...", "").replace(" ", "")
             meanings.append((-math.log10(frequency), meaning))
     return meanings
+
+
+def standalone_meaning(word, source="en", target="zh-CN", timeout=10):
+    """For a past tense form that is also a word (saw, left...), return that word's
+    most common meaning. Returns None for other words."""
+    if word.lower() not in IRREGULAR_PAST_FORMS:
+        return None
+    try:
+        meanings = dictionary_meanings(word, source, target, timeout, standalone_only=True)
+    except Exception:
+        return None
+    return min(meanings)[1] if meanings else None
 
 
 def pick_wrong_meaning(meanings, avoid, target_rarity=TARGET_RARITY, max_rarity=MAX_RARITY):
@@ -226,8 +263,9 @@ def translate_word_by_word(text, source="en", target="zh-CN", timeout=10, rare=T
                            target_rarity=TARGET_RARITY):
     """Translate each word separately, ignoring the sentence it sits in.
 
-    With rare=True each word uses a less common meaning that does not fit the sentence
-    (see TARGET_RARITY), when the dictionary has one.
+    Past tense forms that are also words on their own use that word's meaning
+    (see IRREGULAR_PAST_FORMS). With rare=True every other word uses a less common
+    meaning that does not fit the sentence (see TARGET_RARITY), when the dictionary has one.
     """
     tokens = re.findall(r"[A-Za-z0-9']+|[^\sA-Za-z0-9']", text)
     words = list(dict.fromkeys(t for t in tokens if re.match(r"[A-Za-z0-9']", t)))
@@ -244,11 +282,22 @@ def translate_word_by_word(text, source="en", target="zh-CN", timeout=10, rare=T
     else:
         raise RuntimeError(f"Google Translate request failed: {error}")
 
+    # Past tense forms that are also words on their own take that word's meaning
+    past_forms = [w for w in words if w.lower() in IRREGULAR_PAST_FORMS]
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        standalone = dict(zip(past_forms, pool.map(
+            lambda w: standalone_meaning(w, source, target, timeout), past_forms)))
+    for word, meaning in standalone.items():
+        if meaning:
+            lookup[word] = meaning
+
     if rare:
         # The proper translation tells us which meanings fit the sentence, so we can avoid them
         proper = translate(text, source, target, timeout)
 
         def lookup_rare(word):
+            if standalone.get(word):
+                return None  # already uses the standalone word's meaning
             try:
                 meanings = dictionary_meanings(word, source, target, timeout)
             except Exception:
