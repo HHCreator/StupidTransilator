@@ -1,0 +1,7 @@
+# Wikipedia pages (English titles) that learn.py learns from when run with no arguments.
+# Add a page per line. Run `py learn.py --links 50` to also learn the pages they link to.
+Top Esports
+League of Legends
+Frozen (2013 film)
+Sarah Kerrigan
+Counter-Strike 2

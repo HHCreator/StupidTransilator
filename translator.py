@@ -446,6 +446,59 @@ def spread_rarity(options, target_rarity=TARGET_RARITY, max_rarity=MAX_RARITY, r
     return picks
 
 
+# Memes and names: learned from Wikipedia by learn.py (data/memes_learned.json), plus your
+# own entries in data/memes.json, which win. These always replace the word in the stupid
+# modes: lol -> 英雄联盟, teses -> 滔搏们 (plural), karrigan -> 凯莉根 (near spelling).
+MEMES_FILES = [os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", name)
+               for name in ("memes_learned.json", "memes.json")]
+_memes = None
+_all_words = None
+
+
+def _load_memes():
+    global _memes, _all_words
+    if _memes is None:
+        _memes = {}
+        for path in MEMES_FILES:
+            try:
+                with open(path, encoding="utf-8") as f:
+                    _memes.update({k.lower(): v for k, v in json.load(f).items()})
+            except (OSError, ValueError):
+                pass
+        with open(WORDS_FILE, encoding="utf-8") as f:
+            _all_words = {line.strip().lower() for line in f if line.strip()}
+    return _memes
+
+
+def _one_edit_apart(a, b):
+    if abs(len(a) - len(b)) > 1:
+        return False
+    if len(a) == len(b):
+        return sum(x != y for x, y in zip(a, b)) == 1
+    short, long = sorted((a, b), key=len)
+    return any(long[:i] + long[i + 1:] == short for i in range(len(long)))
+
+
+def meme_for(word):
+    """Return the meme/name translation for a word, or None."""
+    memes = _load_memes()
+    w = word.lower()
+    if w in memes:
+        return memes[w]
+    if w in _all_words:
+        return None  # an ordinary word, leave it alone
+    # Plural of a meme: teses -> tes + 们
+    for ending in ("es", "s"):
+        if w.endswith(ending) and w[: -len(ending)] in memes:
+            return memes[w[: -len(ending)]] + "们"
+    # Near spelling of a longer name: karrigan -> kerrigan
+    if len(w) >= 5:
+        for key, value in memes.items():
+            if len(key) >= 5 and _one_edit_apart(w, key):
+                return value
+    return None
+
+
 def translate_word_by_word(text, source="en", target="zh-CN", timeout=10, rare=True,
                            target_rarity=TARGET_RARITY):
     """Translate each word separately, ignoring the sentence it sits in.
@@ -455,11 +508,16 @@ def translate_word_by_word(text, source="en", target="zh-CN", timeout=10, rare=T
     meaning: some words stay natural and some go far off, averaging TARGET_RARITY.
     """
     tokens = re.findall(r"[A-Za-z0-9']+|[^\sA-Za-z0-9']", text)
+    # Memes and names win over everything else
+    memes = {t: meme_for(t) for t in tokens if re.match(r"[A-Za-z0-9']", t)}
+    memes = {t: m for t, m in memes.items() if m}
     # Split compound words into their parts and translate each part on its own
-    tokens = [part for t in tokens for part in (split_compound(t) or [t])]
-    words = list(dict.fromkeys(t for t in tokens if re.match(r"[A-Za-z0-9']", t)))
+    tokens = [part for t in tokens for part in ([t] if t in memes else split_compound(t) or [t])]
+    # Split parts can be memes too (playoff -> play + off -> 关)
+    memes.update({t: _load_memes()[t.lower()] for t in tokens if t.lower() in _load_memes()})
+    words = list(dict.fromkeys(t for t in tokens if re.match(r"[A-Za-z0-9']", t) and t not in memes))
     if not words:
-        return text
+        return "".join(memes.get(t, PUNCTUATION.get(t, t)) for t in tokens)
 
     error = None
     for backend in (_translate_words_chrome_ex, _translate_words_gtx):
@@ -520,6 +578,7 @@ def translate_word_by_word(text, source="en", target="zh-CN", timeout=10, rare=T
             options = dict(zip(rare_words, pool.map(word_options, rare_words)))
         lookup.update(spread_rarity(options, target_rarity))
 
+    lookup.update(memes)
     return "".join(lookup.get(t, PUNCTUATION.get(t, t)) for t in tokens)
 
 

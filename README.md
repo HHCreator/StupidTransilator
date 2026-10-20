@@ -37,3 +37,18 @@ For the 3,000 most common English words, the stupid mode also finds extra meanin
 round trip: English -> Chinese -> English -> Chinese, keeping Chinese words whose default
 English translation is the original word ("list" -> 单子, "life" -> 辈子). The first time
 a word is seen this takes about 10 requests; results are cached in `.cache/round_trip.json`.
+
+## Learning memes
+
+The stupid modes replace memes and names with their Chinese names: "lol" -> 英雄联盟,
+"frozen" -> 冰雪奇缘, "teses" -> 滔搏们 (plural of TES), "karrigan" -> 凯莉根 (close to Kerrigan).
+These are learned from Wikipedia: for each page it takes the Chinese title and the English
+short names (one-word title, initials like LoL, 简称 abbreviations like TES, surnames).
+
+```
+py learn.py                                   # learn the pages listed in data/meme_seeds.txt
+py learn.py "Top Esports" "Sarah Kerrigan"    # learn specific pages
+py learn.py --links 50 "League of Legends"    # also learn up to 50 pages each one links to
+```
+
+Learned entries go to `data/memes_learned.json`. Put your own in `data/memes.json`; they win.
