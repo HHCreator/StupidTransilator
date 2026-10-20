@@ -16,11 +16,11 @@ py translator.py                          # interactive mode, blank line to quit
 
 In both word-by-word modes, a past tense form that is also a word on its own uses that
 word's meaning: "saw" becomes 锯 (the tool), "left" becomes 左, "rose" becomes 玫瑰.
-The list of these forms is `IRREGULAR_PAST_FORMS` in `translator.py`.
+The list of these forms is `IRREGULAR_PAST_FORMS` in `sbtranslator/translator.py`.
 
 Compound words are split into the common words they are made of and each part is
 translated on its own: "butterfly" becomes butter + fly, "pineapple" becomes pine + apple,
-"carpet" becomes car + pet. Parts come from `data/words/common_english.txt` and must also
+"carpet" becomes car + pet. Parts come from `sbtranslator/data/words/common_english.txt` and must also
 be in Google's dictionary.
 
 In the default stupid mode the rarity is spread unevenly: each run, some words keep the
@@ -31,12 +31,12 @@ Rarity is -log10 of how often Google says a meaning is used: 0 = natural, 1 = 10
 
 Single characters that can't stand alone as a word, like 次 (a measure word), are swapped
 for their standalone word, so "time" can come out as 次数. The table is `STANDALONE_FORMS`
-in `translator.py`, and `EXTRA_MEANINGS` adds meanings Google's dictionary leaves out.
+in `sbtranslator/translator.py`, and `EXTRA_MEANINGS` adds meanings Google's dictionary leaves out.
 
 For the 3,000 most common English words, the stupid mode also finds extra meanings with a
 round trip: English -> Chinese -> English -> Chinese, keeping Chinese words whose default
 English translation is the original word ("list" -> 单子, "life" -> 辈子). The first time
-a word is seen this takes about 10 requests; results are cached in `.cache/round_trip.json`.
+a word is seen this takes about 10 requests; results are cached in `sbtranslator/.cache/round_trip.json`.
 
 ## Learning memes
 
@@ -46,13 +46,52 @@ These are learned from Wikipedia: for each page it takes the Chinese title and t
 short names (one-word title, initials like LoL, 简称 abbreviations like TES, surnames).
 
 ```
-py learn.py                                   # learn the pages listed in data/meme_seeds.txt
+py learn.py                                   # learn the pages listed in sbtranslator/data/meme_seeds.txt
 py learn.py "Top Esports" "Sarah Kerrigan"    # learn specific pages
 py learn.py --links 50 "League of Legends"    # also learn up to 50 pages each one links to
 ```
 
-Learned entries go to `data/memes_learned.json`. Put your own in `data/memes.json`; they win.
+Learned entries go to `sbtranslator/data/memes_learned.json`. Put your own in `sbtranslator/data/memes.json`; they win.
 
 Other stupid-mode rules: contractions are expanded first (can't -> can not), "the" is dropped
 (Chinese has no articles), compound parts keep their natural meaning (firepower -> 火 + 力量),
 and words of 4 letters or fewer are never split (into stays 进入).
+
+## Using it in other apps (add-on)
+
+Install it as a Python package (no extra dependencies):
+
+```
+pip install git+https://github.com/HHCreator/StupidTransilator
+```
+
+From Python:
+
+```python
+import sbtranslator
+
+sbtranslator.translate("The butterfly is eating a pineapple.")        # stupid (default)
+sbtranslator.translate("Hello world", mode="plain")                    # word by word
+sbtranslator.translate("Hello world", mode="proper")                   # correct
+sbtranslator.translate("Long time no see", mode="classical")           # 文言文
+sbtranslator.translate("Long time no see", rarity=1.5)                 # stupider
+```
+
+From any other language (a bot, a browser extension, a game mod), run the local HTTP API:
+
+```
+sbtranslator-server                      # or: python -m sbtranslator.server --port 8765
+```
+
+```
+GET  http://127.0.0.1:8765/translate?text=Hello%20world&mode=stupid
+POST http://127.0.0.1:8765/translate   {"text": "Hello world", "mode": "stupid", "rarity": 0.8}
+GET  http://127.0.0.1:8765/modes
+```
+
+Responses are JSON: `{"text": ..., "mode": ..., "translation": ...}`, or `{"error": ...}` with
+status 400 for bad input and 502 when the online translator can't be reached. The API allows
+cross-origin requests so browser extensions and web pages can call it.
+
+Installing also adds the commands `sbtranslator` (same as `py translator.py`) and
+`sbtranslator-learn` (same as `py learn.py`).
