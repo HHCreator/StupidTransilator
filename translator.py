@@ -190,6 +190,7 @@ PUNCTUATION = {",": "，", ".": "。", "!": "！", "?": "？", ":": "：", ";": 
 # Meanings rarer than MAX_RARITY are too obscure and never used.
 TARGET_RARITY = 0.8
 MAX_RARITY = 3.0
+CAPITALIZED_RARITY = 1.0
 
 
 # Irregular past tense / past participle forms. When one of these is also a word on its
@@ -384,6 +385,14 @@ def translate_word_by_word(text, source="en", target="zh-CN", timeout=10, rare=T
                 meanings = dictionary_meanings(word, source, target, timeout)
             except Exception:
                 meanings = []  # keep the usual translation for this word
+            if word.islower():
+                # The capitalized word can mean something else entirely (may -> May -> 五月,
+                # march -> March -> 三月). Count those meanings as at least CAPITALIZED_RARITY.
+                try:
+                    meanings += [(max(r, CAPITALIZED_RARITY), m) for r, m in
+                                 dictionary_meanings(word.capitalize(), source, target, timeout)]
+                except Exception:
+                    pass
             fitting = [m for _, m in meanings if m in proper]
             natural = max(fitting, key=len) if fitting else lookup[word]
             avoid = [natural, lookup[word]]
