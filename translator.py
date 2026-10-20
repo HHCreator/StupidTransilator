@@ -1,10 +1,11 @@
 """English -> Chinese translator using Google Translate (online).
 
 By default it translates in a "stupid" way: every word is translated on its own,
-with no context, so a full sentence comes out as a literal word-by-word mess.
+with no context, and each word uses the rarest meaning Google's dictionary knows.
 
 Usage:
-    py translator.py "Hello world"            # stupid word-by-word translation
+    py translator.py "Hello world"            # stupid: word by word, rarest meanings
+    py translator.py --plain "Hello world"    # word by word, usual meanings
     py translator.py --proper "Hello world"   # normal whole-sentence translation
     py translator.py                          # interactive mode, blank line or Ctrl+C to quit
 """
@@ -14,6 +15,7 @@ import re
 import sys
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
@@ -75,8 +77,32 @@ def _translate_words_gtx(words, source, target, timeout):
 PUNCTUATION = {",": "，", ".": "。", "!": "！", "?": "？", ":": "：", ";": "；"}
 
 
-def translate_word_by_word(text, source="en", target="zh-CN", timeout=10):
-    """Translate each word separately, ignoring the sentence it sits in."""
+def rarest_translation(word, source="en", target="zh-CN", timeout=10):
+    """Return the least common dictionary translation of a word, or None if there is none."""
+    data = _get_json(
+        "https://clients5.google.com/translate_a/single",
+        {"client": "dict-chrome-ex", "sl": source, "tl": target, "dt": "bd", "q": word},
+        timeout,
+    )
+    # data[1] is a list of parts of speech:
+    # [pos, [terms], [[term, [back translations], None, frequency], ...], base_word, ...]
+    candidates = []
+    for entry in data[1] or []:
+        base_word = entry[3]
+        if base_word.endswith("-"):
+            continue  # an affix like "im-" for "I'm", not the word itself
+        for term in entry[2]:
+            frequency = term[3] if len(term) > 3 and term[3] is not None else 0
+            # Drop placeholders like "在 ... 之上" (on) so the sentence reads as one run
+            candidates.append((frequency, term[0].replace("...", "").replace(" ", "")))
+    return min(candidates)[1] if candidates else None
+
+
+def translate_word_by_word(text, source="en", target="zh-CN", timeout=10, rare=True):
+    """Translate each word separately, ignoring the sentence it sits in.
+
+    With rare=True each word uses its least common meaning, when the dictionary has one.
+    """
     tokens = re.findall(r"[A-Za-z0-9']+|[^\sA-Za-z0-9']", text)
     words = list(dict.fromkeys(t for t in tokens if re.match(r"[A-Za-z0-9']", t)))
     if not words:
@@ -92,6 +118,18 @@ def translate_word_by_word(text, source="en", target="zh-CN", timeout=10):
     else:
         raise RuntimeError(f"Google Translate request failed: {error}")
 
+    if rare:
+        def lookup_rare(word):
+            try:
+                return rarest_translation(word, source, target, timeout)
+            except Exception:
+                return None  # keep the usual translation for this word
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            for word, rare_term in zip(words, pool.map(lookup_rare, words)):
+                if rare_term:
+                    lookup[word] = rare_term
+
     return "".join(lookup.get(t, PUNCTUATION.get(t, t)) for t in tokens)
 
 
@@ -102,14 +140,19 @@ def main():
 
     args = sys.argv[1:]
     proper = "--proper" in args
-    args = [a for a in args if a != "--proper"]
-    convert = translate if proper else translate_word_by_word
+    plain = "--plain" in args
+    args = [a for a in args if a not in ("--proper", "--plain")]
+    if proper:
+        convert, mode = translate, "proper"
+    elif plain:
+        convert, mode = (lambda text: translate_word_by_word(text, rare=False)), "word by word"
+    else:
+        convert, mode = translate_word_by_word, "stupid: word by word, rarest meanings"
 
     if args:
         print(convert(" ".join(args)))
         return
 
-    mode = "proper" if proper else "stupid word-by-word"
     print(f"English -> Chinese ({mode}). Enter a blank line to quit.")
     while True:
         try:
