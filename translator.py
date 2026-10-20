@@ -236,6 +236,73 @@ def dictionary_meanings(word, source="en", target="zh-CN", timeout=10, standalon
     return meanings
 
 
+# Compound words that split into common words are translated part by part in the stupid
+# modes: butterfly -> butter + fly -> 黄油苍蝇. Parts must be common words (data/words),
+# at least 3 letters unless listed in SHORT_PARTS, and not a suffix from NOT_PARTS.
+WORDS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "words",
+                          "common_english.txt")
+SHORT_PARTS = {"a", "i", "an", "as", "at", "be", "by", "do", "go", "he", "if", "in", "is",
+               "it", "me", "my", "no", "of", "on", "or", "so", "to", "up", "us", "we"}
+NOT_PARTS = {"ing", "ion", "ions", "ted", "ent", "est", "ers", "ist", "ate", "ant", "ous",
+             "ive", "ies", "ism", "ful", "less", "ness", "ment", "tion", "able", "ure"}
+_part_words = None
+
+
+def _load_part_words():
+    global _part_words
+    if _part_words is None:
+        with open(WORDS_FILE, encoding="utf-8") as f:
+            words = {line.strip().lower() for line in f if line.strip()}
+        _part_words = {w for w in words if (len(w) >= 3 or w in SHORT_PARTS) and w not in NOT_PARTS}
+        _part_words |= SHORT_PARTS - {"a", "i"}  # "a" and "i" alone make silly splits like "a"+"go"
+    return _part_words
+
+
+def _best_split(w, parts_set):
+    best = {0: []}  # best[i] = best split of w[:i]
+    for end in range(1, len(w) + 1):
+        options = [best[start] + [w[start:end]] for start in range(end)
+                   if start in best and w[start:end] in parts_set and (start, end) != (0, len(w))]
+        if options:
+            best[end] = min(options, key=lambda p: (len(p), -min(map(len, p))))
+    split = best.get(len(w))
+    return split if split and len(split) >= 2 else None
+
+
+_is_real_word_cache = {}
+
+
+def _is_real_word(part, timeout=10):
+    # The word list has some junk (names, abbreviations like "fri"), so check that
+    # Google's dictionary has an entry for the part itself
+    if part not in _is_real_word_cache:
+        try:
+            data = _get_json(
+                "https://clients5.google.com/translate_a/single",
+                {"client": "dict-chrome-ex", "sl": "en", "tl": "zh-CN", "dt": "bd", "q": part},
+                timeout,
+            )
+            _is_real_word_cache[part] = any(e[3].lower() == part for e in data[1] or [])
+        except Exception:
+            _is_real_word_cache[part] = True  # can't check, trust the word list
+    return _is_real_word_cache[part]
+
+
+def split_compound(word, timeout=10):
+    """Split a word into two or more real words (butterfly -> [butter, fly]), or return
+    None if it can't be split. Prefers the fewest parts, then the longest shortest part."""
+    parts_set = set(_load_part_words())
+    w = word.lower()
+    while True:
+        split = _best_split(w, parts_set)
+        if split is None:
+            return None
+        bad = [part for part in split if not _is_real_word(part, timeout)]
+        if not bad:
+            return split
+        parts_set -= set(bad)  # try again without the junk parts
+
+
 def standalone_meaning(word, source="en", target="zh-CN", timeout=10):
     """For a past tense form that is also a word (saw, left...), return that word's
     most common meaning. Returns None for other words."""
@@ -263,11 +330,13 @@ def translate_word_by_word(text, source="en", target="zh-CN", timeout=10, rare=T
                            target_rarity=TARGET_RARITY):
     """Translate each word separately, ignoring the sentence it sits in.
 
-    Past tense forms that are also words on their own use that word's meaning
+    Compound words are split into parts first (see split_compound). Past tense forms that are also words on their own use that word's meaning
     (see IRREGULAR_PAST_FORMS). With rare=True every other word uses a less common
     meaning that does not fit the sentence (see TARGET_RARITY), when the dictionary has one.
     """
     tokens = re.findall(r"[A-Za-z0-9']+|[^\sA-Za-z0-9']", text)
+    # Split compound words into their parts and translate each part on its own
+    tokens = [part for t in tokens for part in (split_compound(t) or [t])]
     words = list(dict.fromkeys(t for t in tokens if re.match(r"[A-Za-z0-9']", t)))
     if not words:
         return text

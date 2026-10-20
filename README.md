@@ -17,3 +17,8 @@ py translator.py                          # interactive mode, blank line to quit
 In both word-by-word modes, a past tense form that is also a word on its own uses that
 word's meaning: "saw" becomes 锯 (the tool), "left" becomes 左, "rose" becomes 玫瑰.
 The list of these forms is `IRREGULAR_PAST_FORMS` in `translator.py`.
+
+Compound words are split into the common words they are made of and each part is
+translated on its own: "butterfly" becomes butter + fly, "pineapple" becomes pine + apple,
+"carpet" becomes car + pet. Parts come from `data/words/common_english.txt` and must also
+be in Google's dictionary.
