@@ -15,6 +15,7 @@ Usage:
 
 import json
 import math
+import os
 import re
 import sys
 import urllib.parse
@@ -105,8 +106,52 @@ def _get_bing_session(timeout):
     return _bing_session
 
 
+# Simplified -> traditional tables from OpenCC (data/opencc). Phrases are matched first,
+# longest match wins, so words like 头发 -> 頭髮 and 千里 -> 千里 come out right.
+OPENCC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "opencc")
+_s2t_table = None
+
+
+def _load_s2t_table():
+    global _s2t_table
+    if _s2t_table is None:
+        _s2t_table = {}
+        for name in ("STCharacters.txt", "STPhrases.txt"):
+            with open(os.path.join(OPENCC_DIR, name), encoding="utf-8") as f:
+                for line in f:
+                    if line.startswith("#") or "\t" not in line:
+                        continue
+                    simplified, traditional = line.rstrip("\n").split("\t", 1)
+                    _s2t_table[simplified] = traditional.split(" ")[0]  # first = most common
+    return _s2t_table
+
+
+def has_simplified(text):
+    """Check whether text contains simplified characters that have a traditional form."""
+    table = _load_s2t_table()
+    return any(table.get(c, c) != c for c in text)
+
+
+def to_traditional(text):
+    """Convert simplified Chinese characters in text to traditional ones."""
+    table = _load_s2t_table()
+    max_length = max(len(key) for key in table)
+    result, i = [], 0
+    while i < len(text):
+        for length in range(min(max_length, len(text) - i), 0, -1):
+            chunk = text[i:i + length]
+            if chunk in table:
+                result.append(table[chunk])
+                i += length
+                break
+        else:
+            result.append(text[i])
+            i += 1
+    return "".join(result)
+
+
 def translate_classical(text, source="en", timeout=15):
-    """Translate text correctly into Classical Chinese (文言文) using Bing Translator."""
+    """Translate text correctly into Classical Chinese (文言文, traditional characters) using Bing."""
     global _bing_session
     for attempt in range(2):
         opener, ig, iid, key, token = _get_bing_session(timeout)
@@ -121,7 +166,12 @@ def translate_classical(text, source="en", timeout=15):
             data = json.loads(opener.open(request, timeout=timeout).read().decode("utf-8"))
             result = data[0]["translations"][0]["text"]
             # Bing mixes in ASCII punctuation and spaces, so switch to Chinese punctuation
-            return "".join(PUNCTUATION.get(c, c) for c in result if c != " ")
+            result = "".join(PUNCTUATION.get(c, c) for c in result if c != " ")
+            # Classical Chinese should be in traditional characters, but Bing sometimes
+            # answers in simplified ones
+            if has_simplified(result):
+                result = to_traditional(result)
+            return result
         except Exception as exc:
             _bing_session = None  # the session may have expired, get a fresh one and retry
             error = exc

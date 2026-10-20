@@ -10,6 +10,6 @@ py translator.py "Hello world"            # stupid: word by word, wrong-but-real
 py translator.py --rarity 2.5 "Hello"     # same, rarer meanings (0 = common, 3 = obscure, default 1.5)
 py translator.py --plain "Hello world"    # word by word, usual meanings
 py translator.py --proper "Hello world"   # normal whole-sentence translation
-py translator.py --classical "Hello"      # correct translation in Classical Chinese (文言文, via Bing)
+py translator.py --classical "Hello"      # correct Classical Chinese (文言文) in traditional characters, via Bing
 py translator.py                          # interactive mode, blank line to quit
 ```
