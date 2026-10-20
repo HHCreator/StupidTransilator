@@ -38,6 +38,32 @@ round trip: English -> Chinese -> English -> Chinese, keeping Chinese words whos
 English translation is the original word ("list" -> 单子, "life" -> 辈子). The first time
 a word is seen this takes about 10 requests; results are cached in `sbtranslator/.cache/round_trip.json`.
 
+## Overlay window (standalone exe)
+
+**Download: [SBtranslator.exe](https://github.com/HHCreator/StupidTransilator/raw/standalone/dist/SBtranslator.exe)** (Windows, no install, no Python needed). Windows may warn about an unknown publisher because the exe is not code signed; choose More info > Run anyway.
+
+A small always-on-top window to translate while you are in another app or a game:
+type an English sentence, press Enter, and the Chinese shows below. Pick the mode with the
+buttons at the top (Stupid, Plain, Proper, 文言文); in Stupid mode a slider sets the rarity.
+
+```
+py overlay.py                 # run it from source, no extra packages
+py -m pip install pyinstaller
+py build_exe.py               # builds dist/SBtranslator.exe
+```
+
+`dist/SBtranslator.exe` is a single file with Python and the data inside, so it runs on a PC
+without Python (it still needs an internet connection). Controls:
+
+- Enter translates, Shift+Enter adds a new line, Copy puts the result on the clipboard
+- Drag the title bar to move it, ✕ to quit
+- Ctrl+Alt+T hides and shows it from any app (if another app already uses that key, the hint
+  in the title bar disappears and the hotkey is off)
+
+It stays above normal windows, but a game in exclusive fullscreen can hide it (use windowed
+or borderless mode). The exe keeps the round trip cache in `%LOCALAPPDATA%\SBtranslator`.
+Without building, `pip install` also adds a `sbtranslator-overlay` command.
+
 ## Learning memes
 
 The stupid modes replace memes and names with their Chinese names: "lol" -> 英雄联盟,

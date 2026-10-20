@@ -19,6 +19,9 @@ sbtranslator = "sbtranslator.translator:main"
 sbtranslator-learn = "sbtranslator.learn:main"
 sbtranslator-server = "sbtranslator.server:main"
 
+[project.gui-scripts]
+sbtranslator-overlay = "sbtranslator.overlay:main"
+
 [tool.setuptools]
 packages = ["sbtranslator"]
 

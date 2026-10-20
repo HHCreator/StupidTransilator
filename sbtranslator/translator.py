@@ -213,11 +213,16 @@ STANDALONE_FORMS = {
 # Chinese -> English -> Chinese, and keep Chinese words whose default English translation
 # is the original word (cry -> 哭 -> shout -> 叫声 -> "cry"). Each word costs about 10
 # requests, so it only runs for the ROUND_TRIP_TOP_WORDS most common words in
-# data/words/common_english.txt, and results are cached in .cache/round_trip.json.
+# data/words/common_english.txt, and results are cached in .cache/round_trip.json (in the
+# packaged exe the folder next to the code is temporary, so it goes to %LOCALAPPDATA%).
 ROUND_TRIP_TOP_WORDS = 3000
 ROUND_TRIP_RARITY = 1.5
 ROUND_TRIP_BACK_WORDS = 12
-CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".cache", "round_trip.json")
+if getattr(sys, "frozen", False):
+    CACHE_FILE = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"),
+                              "SBtranslator", "round_trip.json")
+else:
+    CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".cache", "round_trip.json")
 
 # Meanings Google's dictionary leaves out, such as the measure-word sense of "time"
 # ("three times" = 三次), as (rarity, meaning).
