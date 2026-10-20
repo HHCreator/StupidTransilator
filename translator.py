@@ -1,11 +1,16 @@
 """English -> Chinese translator using Google Translate (online).
 
+By default it translates in a "stupid" way: every word is translated on its own,
+with no context, so a full sentence comes out as a literal word-by-word mess.
+
 Usage:
-    py translator.py "Hello world"     # translate once
-    py translator.py                   # interactive mode, blank line or Ctrl+C to quit
+    py translator.py "Hello world"            # stupid word-by-word translation
+    py translator.py --proper "Hello world"   # normal whole-sentence translation
+    py translator.py                          # interactive mode, blank line or Ctrl+C to quit
 """
 
 import json
+import re
 import sys
 import urllib.parse
 import urllib.request
@@ -55,16 +60,57 @@ def translate(text, source="en", target="zh-CN", timeout=10):
     raise RuntimeError(f"Google Translate request failed: {error}")
 
 
+def _translate_words_chrome_ex(words, source, target, timeout):
+    # The Chrome extension endpoint accepts many q= params and returns one result per q
+    params = [("client", "dict-chrome-ex"), ("sl", source), ("tl", target)]
+    params += [("q", word) for word in words]
+    data = _get_json("https://clients5.google.com/translate_a/t", params, timeout)
+    return [item[0] if isinstance(item, list) else item for item in data]
+
+
+def _translate_words_gtx(words, source, target, timeout):
+    return [_translate_gtx(word, source, target, timeout) for word in words]
+
+
+PUNCTUATION = {",": "，", ".": "。", "!": "！", "?": "？", ":": "：", ";": "；"}
+
+
+def translate_word_by_word(text, source="en", target="zh-CN", timeout=10):
+    """Translate each word separately, ignoring the sentence it sits in."""
+    tokens = re.findall(r"[A-Za-z0-9']+|[^\sA-Za-z0-9']", text)
+    words = list(dict.fromkeys(t for t in tokens if re.match(r"[A-Za-z0-9']", t)))
+    if not words:
+        return text
+
+    error = None
+    for backend in (_translate_words_chrome_ex, _translate_words_gtx):
+        try:
+            lookup = dict(zip(words, backend(words, source, target, timeout)))
+            break
+        except Exception as exc:
+            error = exc
+    else:
+        raise RuntimeError(f"Google Translate request failed: {error}")
+
+    return "".join(lookup.get(t, PUNCTUATION.get(t, t)) for t in tokens)
+
+
 def main():
     # Make sure Chinese prints correctly in the Windows console
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
 
-    if len(sys.argv) > 1:
-        print(translate(" ".join(sys.argv[1:])))
+    args = sys.argv[1:]
+    proper = "--proper" in args
+    args = [a for a in args if a != "--proper"]
+    convert = translate if proper else translate_word_by_word
+
+    if args:
+        print(convert(" ".join(args)))
         return
 
-    print("English -> Chinese. Enter a blank line to quit.")
+    mode = "proper" if proper else "stupid word-by-word"
+    print(f"English -> Chinese ({mode}). Enter a blank line to quit.")
     while True:
         try:
             text = input("EN> ").strip()
@@ -74,7 +120,7 @@ def main():
         if not text:
             break
         try:
-            print("ZH>", translate(text))
+            print("ZH>", convert(text))
         except Exception as error:
             print(f"Translation failed: {error}")
 
