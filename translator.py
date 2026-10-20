@@ -1,16 +1,19 @@
 """English -> Chinese translator using Google Translate (online).
 
 By default it translates in a "stupid" way: every word is translated on its own,
-with no context, and each word uses the rarest meaning Google's dictionary knows.
+with no context, and each word uses a real but less common meaning that does not
+fit the sentence. TARGET_RARITY below (or --rarity) sets how far off the meanings go.
 
 Usage:
-    py translator.py "Hello world"            # stupid: word by word, rarest meanings
+    py translator.py "Hello world"            # stupid: word by word, wrong-but-real meanings
+    py translator.py --rarity 2.5 "Hello"     # same, with rarer meanings (0 = common, 3 = obscure)
     py translator.py --plain "Hello world"    # word by word, usual meanings
     py translator.py --proper "Hello world"   # normal whole-sentence translation
     py translator.py                          # interactive mode, blank line or Ctrl+C to quit
 """
 
 import json
+import math
 import re
 import sys
 import urllib.parse
@@ -77,8 +80,16 @@ def _translate_words_gtx(words, source, target, timeout):
 PUNCTUATION = {",": "，", ".": "。", "!": "！", "?": "？", ":": "：", ";": "；"}
 
 
-def rarest_translation(word, source="en", target="zh-CN", timeout=10):
-    """Return the least common dictionary translation of a word, or None if there is none."""
+# How rare the chosen meaning should be. Each dictionary meaning gets a rarity weight of
+# -log10(frequency): 0 = the only meaning, 1 = used 10% of the time, 2 = 1%, 3 = 0.1%.
+# We pick the meaning whose weight is closest to TARGET_RARITY, skip anything rarer than
+# MAX_RARITY (too obscure), and skip meanings the proper sentence translation already uses.
+TARGET_RARITY = 1.5
+MAX_RARITY = 3.0
+
+
+def dictionary_meanings(word, source="en", target="zh-CN", timeout=10):
+    """Return [(rarity, meaning), ...] for a word from Google's dictionary data."""
     data = _get_json(
         "https://clients5.google.com/translate_a/single",
         {"client": "dict-chrome-ex", "sl": source, "tl": target, "dt": "bd", "q": word},
@@ -86,22 +97,36 @@ def rarest_translation(word, source="en", target="zh-CN", timeout=10):
     )
     # data[1] is a list of parts of speech:
     # [pos, [terms], [[term, [back translations], None, frequency], ...], base_word, ...]
-    candidates = []
+    meanings = []
     for entry in data[1] or []:
         base_word = entry[3]
         if base_word.endswith("-"):
             continue  # an affix like "im-" for "I'm", not the word itself
         for term in entry[2]:
-            frequency = term[3] if len(term) > 3 and term[3] is not None else 0
+            frequency = term[3] if len(term) > 3 and term[3] else 1e-9
             # Drop placeholders like "在 ... 之上" (on) so the sentence reads as one run
-            candidates.append((frequency, term[0].replace("...", "").replace(" ", "")))
-    return min(candidates)[1] if candidates else None
+            meaning = term[0].replace("...", "").replace(" ", "")
+            meanings.append((-math.log10(frequency), meaning))
+    return meanings
 
 
-def translate_word_by_word(text, source="en", target="zh-CN", timeout=10, rare=True):
+def pick_wrong_meaning(meanings, avoid, target_rarity=TARGET_RARITY, max_rarity=MAX_RARITY):
+    """Pick a well-known meaning that is not the one the sentence actually needs."""
+    usable = [
+        (rarity, meaning) for rarity, meaning in meanings
+        if rarity <= max_rarity and not any(meaning in a or a in meaning for a in avoid)
+    ]
+    if not usable:
+        return None
+    return min(usable, key=lambda m: abs(m[0] - target_rarity))[1]
+
+
+def translate_word_by_word(text, source="en", target="zh-CN", timeout=10, rare=True,
+                           target_rarity=TARGET_RARITY):
     """Translate each word separately, ignoring the sentence it sits in.
 
-    With rare=True each word uses its least common meaning, when the dictionary has one.
+    With rare=True each word uses a less common meaning that does not fit the sentence
+    (see TARGET_RARITY), when the dictionary has one.
     """
     tokens = re.findall(r"[A-Za-z0-9']+|[^\sA-Za-z0-9']", text)
     words = list(dict.fromkeys(t for t in tokens if re.match(r"[A-Za-z0-9']", t)))
@@ -119,11 +144,16 @@ def translate_word_by_word(text, source="en", target="zh-CN", timeout=10, rare=T
         raise RuntimeError(f"Google Translate request failed: {error}")
 
     if rare:
+        # The proper translation tells us which meanings fit the sentence, so we can avoid them
+        proper = translate(text, source, target, timeout)
+
         def lookup_rare(word):
             try:
-                return rarest_translation(word, source, target, timeout)
+                meanings = dictionary_meanings(word, source, target, timeout)
             except Exception:
                 return None  # keep the usual translation for this word
+            avoid = [m for m in (lookup[word],) if m] + [m for _, m in meanings if m in proper]
+            return pick_wrong_meaning(meanings, avoid, target_rarity)
 
         with ThreadPoolExecutor(max_workers=4) as pool:
             for word, rare_term in zip(words, pool.map(lookup_rare, words)):
@@ -141,13 +171,19 @@ def main():
     args = sys.argv[1:]
     proper = "--proper" in args
     plain = "--plain" in args
+    target_rarity = TARGET_RARITY
+    if "--rarity" in args:
+        i = args.index("--rarity")
+        target_rarity = float(args[i + 1])
+        del args[i:i + 2]
     args = [a for a in args if a not in ("--proper", "--plain")]
     if proper:
         convert, mode = translate, "proper"
     elif plain:
         convert, mode = (lambda text: translate_word_by_word(text, rare=False)), "word by word"
     else:
-        convert, mode = translate_word_by_word, "stupid: word by word, rarest meanings"
+        convert = lambda text: translate_word_by_word(text, target_rarity=target_rarity)
+        mode = f"stupid: word by word, rarity {target_rarity}"
 
     if args:
         print(convert(" ".join(args)))
