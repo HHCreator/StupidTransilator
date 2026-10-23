@@ -11,6 +11,32 @@ Usage:
     py translator.py --proper "Hello world"   # normal whole-sentence translation
     py translator.py --classical "Hello"      # correct translation in Classical Chinese (文言文)
     py translator.py                          # interactive mode, blank line or Ctrl+C to quit
+
+The four modes and the function behind each one:
+
+    proper      translate()                          the whole sentence in one request
+    plain       translate_word_by_word(rare=False)   every word on its own, usual meanings
+    stupid      translate_word_by_word()             every word on its own, wrong meanings
+    classical   translate_classical()                the whole sentence, in 文言文
+
+How this file is laid out (each part starts with a banner comment):
+
+    1. Google Translate        requests to Google's free translate endpoints
+    2. Classical Chinese       文言文 through Bing, then simplified -> traditional characters
+    3. Stupid-mode settings    the numbers and word lists to tune
+    4. Dictionary meanings     every meaning Google's dictionary knows for a word
+    5. Compound words          butterfly -> butter + fly
+    6. Round trip              extra meanings via English -> Chinese -> English -> Chinese
+    7. Past tense words        saw -> 锯 (the tool) instead of 看见
+    8. Rarity                  which word gets which meaning
+    9. Clean-up rules          can't -> can not, drop "the"
+    10. Memes and names        lol -> 英雄联盟, teses -> 滔搏们
+    11. The stupid pipeline    translate_word_by_word() puts parts 3-10 together
+    12. Command line           main()
+
+Everything is plain functions plus a few module-level caches (variables starting with _
+that are filled the first time they are needed), so the module can be used from the
+command line, from sbtranslator/__init__.py, the HTTP server and the overlay window alike.
 """
 
 import json
@@ -25,16 +51,31 @@ import http.cookiejar
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
+
+# =========================================================================================
+# 1. Google Translate
+#
+# Google has no free official API, so this uses the public endpoints its own apps call.
+# Every request goes through _get_json(). Each kind of request has two endpoints: if the
+# first one fails (for example HTTP 429, "too many requests"), the second one is tried.
+# =========================================================================================
+
+# Google refuses requests that don't look like they come from a browser
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 
 def _get_json(url, params, timeout):
+    """Send a GET request to url with the query parameters params; return the parsed JSON.
+
+    params is a dict, or a list of (name, value) pairs when a name repeats (q=a&q=b).
+    """
     request = urllib.request.Request(f"{url}?{urllib.parse.urlencode(params)}", headers=HEADERS)
     with urllib.request.urlopen(request, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
 def _translate_chrome_ex(text, source, target, timeout):
+    """Translate text with the endpoint the Google Translate Chrome extension uses."""
     # Endpoint used by the Google Translate Chrome extension. Returns ["译文"].
     data = _get_json(
         "https://clients5.google.com/translate_a/t",
@@ -47,12 +88,14 @@ def _translate_chrome_ex(text, source, target, timeout):
 
 
 def _translate_gtx(text, source, target, timeout):
+    """Translate text with the classic free endpoint (the fallback; often rate limited)."""
     # Classic free endpoint. data[0] is a list of [translated_chunk, original_chunk, ...].
     data = _get_json(
         "https://translate.googleapis.com/translate_a/single",
         {"client": "gtx", "sl": source, "tl": target, "dt": "t", "q": text},
         timeout,
     )
+    # Long text comes back in chunks (about one per sentence), so join them
     return "".join(chunk[0] for chunk in data[0] if chunk and chunk[0])
 
 
@@ -60,17 +103,20 @@ def translate(text, source="en", target="zh-CN", timeout=10):
     """Translate text with Google Translate and return the translated string.
 
     Tries two public Google endpoints, since either one can get rate limited (HTTP 429).
+    This is the "proper" mode, and the stupid mode also uses it to learn which meanings
+    fit the sentence (so it can avoid them).
     """
     error = None
     for backend in (_translate_chrome_ex, _translate_gtx):
         try:
             return backend(text, source, target, timeout)
         except Exception as exc:
-            error = exc
+            error = exc  # remember why it failed and try the next endpoint
     raise RuntimeError(f"Google Translate request failed: {error}")
 
 
 def _translate_words_chrome_ex(words, source, target, timeout):
+    """Translate a list of words in one request; returns one translation per word, in order."""
     # The Chrome extension endpoint accepts many q= params and returns one result per q
     params = [("client", "dict-chrome-ex"), ("sl", source), ("tl", target)]
     params += [("q", word) for word in words]
@@ -79,13 +125,23 @@ def _translate_words_chrome_ex(words, source, target, timeout):
 
 
 def _translate_words_gtx(words, source, target, timeout):
+    """Fallback for _translate_words_chrome_ex(): one request per word, so it is slower."""
     return [_translate_gtx(word, source, target, timeout) for word in words]
 
 
+# =========================================================================================
+# 2. Classical Chinese (文言文)
+#
 # Google Translate has no Classical Chinese, so classical mode uses Bing Translator's web
 # page instead ("lzh" = 文言文). Bing needs a session (cookies + tokens from its page),
-# which we fetch once and reuse.
+# which we fetch once and reuse. Classical Chinese is written in traditional characters,
+# but Bing sometimes answers in simplified ones, so the answer is converted with OpenCC's
+# dictionaries (data/opencc).
+# =========================================================================================
+
+# (opener with cookies, IG, IID, key, token) once _get_bing_session() has run, else None
 _bing_session = None
+# Bing only hands out a session to something that looks like a real browser
 BING_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                   "(KHTML, like Gecko) Chrome/130.0 Safari/537.36",
@@ -93,12 +149,20 @@ BING_HEADERS = {
 
 
 def _get_bing_session(timeout):
+    """Return Bing's session: (opener with cookies, IG, IID, key, token).
+
+    The first call loads https://www.bing.com/translator and reads the values its own
+    JavaScript sends along with every translation; later calls reuse them. Set
+    _bing_session back to None to force a fresh session.
+    """
     global _bing_session
     if _bing_session is None:
+        # The opener keeps the cookies Bing sets, and sends them with later requests
         opener = urllib.request.build_opener(
             urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
         request = urllib.request.Request("https://www.bing.com/translator", headers=BING_HEADERS)
         html = opener.open(request, timeout=timeout).read().decode("utf-8", "ignore")
+        # IG and IID identify this page view; key and token are Bing's anti-abuse values
         ig = re.search(r'IG:"([^"]+)"', html)
         iid = re.search(r'data-iid="([^"]+)"', html)
         abuse = re.search(r'params_AbusePreventionHelper\s*=\s*\[(\d+),"([^"]+)"', html)
@@ -111,10 +175,16 @@ def _get_bing_session(timeout):
 # Simplified -> traditional tables from OpenCC (data/opencc). Phrases are matched first,
 # longest match wins, so words like 头发 -> 頭髮 and 千里 -> 千里 come out right.
 OPENCC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "opencc")
-_s2t_table = None
+_s2t_table = None  # {simplified: traditional}, loaded by _load_s2t_table()
 
 
 def _load_s2t_table():
+    """Load OpenCC's two tables into one dict {simplified: traditional} (only once).
+
+    Each line of the files is "simplified<TAB>traditional [other traditional ...]"; the
+    first traditional form is the most common one, so that is the one kept. The phrase
+    table is loaded second, so a phrase entry wins over a character entry with the same key.
+    """
     global _s2t_table
     if _s2t_table is None:
         _s2t_table = {}
@@ -122,7 +192,7 @@ def _load_s2t_table():
             with open(os.path.join(OPENCC_DIR, name), encoding="utf-8") as f:
                 for line in f:
                     if line.startswith("#") or "\t" not in line:
-                        continue
+                        continue  # comments and blank lines
                     simplified, traditional = line.rstrip("\n").split("\t", 1)
                     _s2t_table[simplified] = traditional.split(" ")[0]  # first = most common
     return _s2t_table
@@ -138,6 +208,8 @@ def to_traditional(text):
     """Convert simplified Chinese characters in text to traditional ones."""
     table = _load_s2t_table()
     max_length = max(len(key) for key in table)
+    # Greedy longest match: at each position try the longest phrase first, so a whole
+    # word (头发 -> 頭髮) wins over converting its characters one by one
     result, i = [], 0
     while i < len(text):
         for length in range(min(max_length, len(text) - i), 0, -1):
@@ -147,6 +219,7 @@ def to_traditional(text):
                 i += length
                 break
         else:
+            # No entry starts here (punctuation, English, already traditional): keep it
             result.append(text[i])
             i += 1
     return "".join(result)
@@ -155,6 +228,7 @@ def to_traditional(text):
 def translate_classical(text, source="en", timeout=15):
     """Translate text correctly into Classical Chinese (文言文, traditional characters) using Bing."""
     global _bing_session
+    # Two attempts: if the first one fails, the saved session may have expired
     for attempt in range(2):
         opener, ig, iid, key, token = _get_bing_session(timeout)
         body = urllib.parse.urlencode(
@@ -182,8 +256,17 @@ def translate_classical(text, source="en", timeout=15):
     raise RuntimeError(f"Bing Translator request failed: {error}")
 
 
+# English punctuation -> Chinese (full-width) punctuation. Used by the word-by-word modes
+# when they put the sentence back together, and by classical mode.
 PUNCTUATION = {",": "，", ".": "。", "!": "！", "?": "？", ":": "：", ";": "；"}
 
+
+# =========================================================================================
+# 3. Settings for the stupid modes
+#
+# The numbers and word lists that decide how stupid the translation gets. Change these to
+# tune the results; the functions further down only read them.
+# =========================================================================================
 
 # How rare the chosen meanings should be. Each dictionary meaning gets a rarity weight of
 # -log10(frequency): 0 = the only meaning, 1 = used 10% of the time, 2 = 1%, 3 = 0.1%.
@@ -193,6 +276,7 @@ PUNCTUATION = {",": "，", ".": "。", "!": "！", "?": "？", ":": "：", ";": 
 # Meanings rarer than MAX_RARITY are too obscure and never used.
 TARGET_RARITY = 0.8
 MAX_RARITY = 3.0
+# Meanings of the capitalized word (may -> May -> 五月) count as at least this rare
 CAPITALIZED_RARITY = 1.0
 
 # Single characters that don't stand alone as a word in Chinese (measure words and bound
@@ -216,8 +300,8 @@ STANDALONE_FORMS = {
 # data/words/common_english.txt, and results are cached in .cache/round_trip.json (in the
 # packaged exe the folder next to the code is temporary, so it goes to %LOCALAPPDATA%).
 ROUND_TRIP_TOP_WORDS = 3000
-ROUND_TRIP_RARITY = 1.5
-ROUND_TRIP_BACK_WORDS = 12
+ROUND_TRIP_RARITY = 1.5  # the rarity given to every meaning the round trip finds
+ROUND_TRIP_BACK_WORDS = 12  # how many English back-translations to follow for each word
 if getattr(sys, "frozen", False):
     CACHE_FILE = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"),
                               "SBtranslator", "round_trip.json")
@@ -250,11 +334,20 @@ IRREGULAR_PAST_FORMS = set("""
 """.split())
 
 
+# =========================================================================================
+# 4. Dictionary meanings
+#
+# Besides a translation, Google can return its dictionary entry for a single word (dt=bd):
+# every meaning, grouped by part of speech, with how often each one is used. The stupid
+# mode picks its wrong-but-real meanings from these lists.
+# =========================================================================================
+
 def dictionary_meanings(word, source="en", target="zh-CN", timeout=10, standalone_only=False):
     """Return [(rarity, meaning), ...] for a word from Google's dictionary data.
 
-    With standalone_only=True, only meanings of the word itself are kept, not meanings
-    Google lists under a different base word.
+    rarity is -log10(how often the meaning is used), so for "table" 表 (used 75% of the
+    time) gets 0.1 and 桌子 (2%) gets 1.7. With standalone_only=True, only meanings of the
+    word itself are kept, not meanings Google lists under a different base word.
     """
     data = _get_json(
         "https://clients5.google.com/translate_a/single",
@@ -271,12 +364,17 @@ def dictionary_meanings(word, source="en", target="zh-CN", timeout=10, standalon
         if standalone_only and base_word.lower() != word.lower():
             continue
         for term in entry[2]:
+            # A meaning without a frequency counts as extremely rare (rarity 9)
             frequency = term[3] if len(term) > 3 and term[3] else 1e-9
             # Drop placeholders like "在 ... 之上" (on) so the sentence reads as one run
             meaning = term[0].replace("...", "").replace(" ", "")
             meanings.append((-math.log10(frequency), meaning))
     return meanings
 
+
+# =========================================================================================
+# 5. Compound words: butterfly -> butter + fly
+# =========================================================================================
 
 # Compound words that split into common words are translated part by part in the stupid
 # modes: butterfly -> butter + fly -> 黄油苍蝇. Parts must be common words (data/words),
@@ -287,10 +385,11 @@ SHORT_PARTS = {"a", "i", "an", "as", "at", "be", "by", "do", "go", "he", "if", "
                "it", "me", "my", "no", "of", "on", "or", "so", "to", "up", "us", "we"}
 NOT_PARTS = {"ing", "ion", "ions", "ted", "ent", "est", "ers", "ist", "ate", "ant", "ous",
              "ive", "ies", "ism", "ful", "less", "ness", "ment", "tion", "able", "ure", "ana"}
-_part_words = None
+_part_words = None  # the set of allowed parts, built by _load_part_words()
 
 
 def _load_part_words():
+    """Build the set of words a compound may be split into (only once)."""
     global _part_words
     if _part_words is None:
         with open(WORDS_FILE, encoding="utf-8") as f:
@@ -301,6 +400,13 @@ def _load_part_words():
 
 
 def _best_split(w, parts_set):
+    """Split w into words from parts_set with dynamic programming, or return None.
+
+    best[i] holds the best way found to split the first i letters. For every end position,
+    try every earlier start where the letters in between are a known part, and keep the
+    option with the fewest parts, then the one whose shortest part is longest. The whole
+    word on its own doesn't count as a split.
+    """
     best = {0: []}  # best[i] = best split of w[:i]
     for end in range(1, len(w) + 1):
         options = [best[start] + [w[start:end]] for start in range(end)
@@ -311,12 +417,15 @@ def _best_split(w, parts_set):
     return split if split and len(split) >= 2 else None
 
 
-_is_real_word_cache = {}
+_is_real_word_cache = {}  # {part: True/False}, so each part is only checked once per run
 
 
 def _is_real_word(part, timeout=10):
-    # The word list has some junk (names, abbreviations like "fri"), so check that
-    # Google's dictionary has an entry for the part itself
+    """Check that Google's dictionary has an entry for part itself.
+
+    The word list has some junk (names, abbreviations like "fri"), so a split like
+    friend -> fri + end is only accepted if every part is a real word.
+    """
     if part not in _is_real_word_cache:
         try:
             data = _get_json(
@@ -340,6 +449,8 @@ def split_compound(word, timeout=10):
     if len(w) <= MIN_SPLIT_LETTERS:
         return None  # short words like "into" stay whole
     parts_set = set(_load_part_words())
+    # _best_split() only knows the word list; if Google's dictionary rejects a part,
+    # remove that part and look for another split
     while True:
         split = _best_split(w, parts_set)
         if split is None:
@@ -350,12 +461,21 @@ def split_compound(word, timeout=10):
         parts_set -= set(bad)  # try again without the junk parts
 
 
-_top_words = None
-_round_trip_cache = None
+# =========================================================================================
+# 6. Round trip: extra meanings via English -> Chinese -> English -> Chinese
+#
+# Google's English -> Chinese dictionary misses some meanings, so for common words the
+# translator looks further (see the round trip settings in part 3). Results are saved in
+# CACHE_FILE, so each word only costs requests the first time it is seen.
+# =========================================================================================
+
+_top_words = None  # the ROUND_TRIP_TOP_WORDS most common words, as a set
+_round_trip_cache = None  # {word: [meanings found]}, read from and written to CACHE_FILE
 _round_trip_lock = threading.Lock()  # word lookups run in parallel and share the cache
 
 
 def _dictionary(word, source, target, timeout):
+    """Return Google's raw dictionary data (dt=bd) for a word, in either direction."""
     return _get_json(
         "https://clients5.google.com/translate_a/single",
         {"client": "dict-chrome-ex", "sl": source, "tl": target, "dt": "bd", "q": word},
@@ -364,6 +484,7 @@ def _dictionary(word, source, target, timeout):
 
 
 def _load_round_trip_state():
+    """Load the common word list and the cache file the first time they are needed."""
     global _top_words, _round_trip_cache
     if _top_words is None:
         with open(WORDS_FILE, encoding="utf-8") as f:
@@ -373,17 +494,21 @@ def _load_round_trip_state():
             with open(CACHE_FILE, encoding="utf-8") as f:
                 _round_trip_cache = json.load(f)
         except (OSError, ValueError):
-            _round_trip_cache = {}
+            _round_trip_cache = {}  # no cache yet, or a broken one: start empty
 
 
 def round_trip_meanings(word, timeout=10):
     """Find extra Chinese meanings of a common English word by a round trip through
-    Chinese and English (see ROUND_TRIP_TOP_WORDS). Returns a list of Chinese words."""
+    Chinese and English (see ROUND_TRIP_TOP_WORDS). Returns a list of Chinese words.
+
+    Example: life -> 生命, 寿命 ... -> lifetime, longevity ... -> 辈子, 一生 ... and 辈子 is
+    kept because Google translates it back to exactly "life".
+    """
     w = word.lower()
     with _round_trip_lock:
         _load_round_trip_state()
     if w not in _top_words:
-        return []
+        return []  # only common words are worth the requests
     if w in _round_trip_cache:
         return _round_trip_cache[w]
 
@@ -413,6 +538,7 @@ def round_trip_meanings(word, timeout=10):
         outputs = [o[0] if isinstance(o, list) else o for o in outputs]
         found = [c for c, o in zip(candidates, outputs) if o.strip().lower() == w]
 
+    # Save the result (even an empty one) so this word never costs requests again
     with _round_trip_lock:
         _round_trip_cache[w] = found
         try:
@@ -420,9 +546,13 @@ def round_trip_meanings(word, timeout=10):
             with open(CACHE_FILE, "w", encoding="utf-8") as f:
                 json.dump(_round_trip_cache, f, ensure_ascii=False, indent=0)
         except OSError:
-            pass
+            pass  # a read-only folder only means no cache, not a failed translation
     return found
 
+
+# =========================================================================================
+# 7. Past tense words that are also words on their own: saw -> 锯, left -> 左
+# =========================================================================================
 
 def standalone_meaning(word, source="en", target="zh-CN", timeout=10):
     """For a past tense form that is also a word (saw, left...), return that word's
@@ -433,8 +563,13 @@ def standalone_meaning(word, source="en", target="zh-CN", timeout=10):
         meanings = dictionary_meanings(word, source, target, timeout, standalone_only=True)
     except Exception:
         return None
+    # The lowest rarity is the most common meaning
     return min(meanings)[1] if meanings else None
 
+
+# =========================================================================================
+# 8. Rarity: which word gets which meaning
+# =========================================================================================
 
 def spread_rarity(options, target_rarity=TARGET_RARITY, max_rarity=MAX_RARITY, rng=random,
                   stats=None):
@@ -443,12 +578,17 @@ def spread_rarity(options, target_rarity=TARGET_RARITY, max_rarity=MAX_RARITY, r
     options maps word -> [(rarity, meaning), ...], where rarity 0 is the meaning that fits
     the sentence. Words are visited in random order; each takes a random share of the
     remaining rarity budget, so a few words go far off while the rest stay natural.
+
+    Example: 5 words at target 0.8 share a budget of 4.0. "time" might spend 1.5 on 次数
+    and "good" 2.2 on 善良; the budget is then almost gone, so the other words keep their
+    natural meaning. Pass a dict as stats to get the average rarity actually reached.
     """
-    budget = target_rarity * len(options)
+    budget = target_rarity * len(options)  # total rarity the whole sentence may spend
     picks = {}
-    for word in rng.sample(list(options), len(options)):
+    for word in rng.sample(list(options), len(options)):  # every word once, random order
         # Never overspend the budget, so the average doesn't end up above the target
         choices = [o for o in options[word] if o[0] <= min(max_rarity, budget)] or options[word][:1]
+        # How far off this word should go: a random amount, at most what is left
         wanted = min(budget, rng.uniform(0, max_rarity))
         rarity, meaning = min(choices, key=lambda o: abs(o[0] - wanted))
         picks[word] = meaning
@@ -457,6 +597,10 @@ def spread_rarity(options, target_rarity=TARGET_RARITY, max_rarity=MAX_RARITY, r
         stats["average_rarity"] = target_rarity - budget / len(options)
     return picks
 
+
+# =========================================================================================
+# 9. Clean-up rules applied before translating
+# =========================================================================================
 
 # Contractions are expanded before translating, so "can't" is can + not instead of
 # Google reading it as "cant" (斜面). 's is left alone since it is often possessive.
@@ -470,25 +614,37 @@ SKIPPED_WORDS = {"the"}
 
 
 def expand_contraction(token):
+    """Split a contraction into words: "can't" -> ["can", "not"], "I'm" -> ["I", "am"].
+
+    Any other token comes back unchanged, as a one-item list.
+    """
     t = token.lower()
     if t in CONTRACTIONS:
-        return CONTRACTIONS[t]
+        return CONTRACTIONS[t]  # irregular ones, where the first part changes
     for ending, word in CONTRACTION_ENDINGS.items():
         if t.endswith(ending) and len(t) > len(ending):
             return [token[: -len(ending)], word]
     return [token]
 
 
+# =========================================================================================
+# 10. Memes and names: lol -> 英雄联盟, frozen -> 冰雪奇缘, teses -> 滔搏们
+# =========================================================================================
+
 # Memes and names: learned from Wikipedia by learn.py (data/memes_learned.json), plus your
 # own entries in data/memes.json, which win. These always replace the word in the stupid
 # modes: lol -> 英雄联盟, teses -> 滔搏们 (plural), karrigan -> 凯莉根 (near spelling).
 MEMES_FILES = [os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", name)
                for name in ("memes_learned.json", "memes.json")]
-_memes = None
-_all_words = None
+_memes = None  # {lowercase English word: Chinese}, loaded by _load_memes()
+_all_words = None  # every word in the common word list, to tell ordinary words from names
 
 
 def _load_memes():
+    """Load the meme dictionaries into one dict {lowercase word: Chinese} (only once).
+
+    memes.json is loaded last, so your own entries override learned ones.
+    """
     global _memes, _all_words
     if _memes is None:
         _memes = {}
@@ -497,23 +653,30 @@ def _load_memes():
                 with open(path, encoding="utf-8") as f:
                     _memes.update({k.lower(): v for k, v in json.load(f).items()})
             except (OSError, ValueError):
-                pass
+                pass  # a missing or broken file just means no memes from it
         with open(WORDS_FILE, encoding="utf-8") as f:
             _all_words = {line.strip().lower() for line in f if line.strip()}
     return _memes
 
 
 def _one_edit_apart(a, b):
+    """True if b is a with exactly one letter changed, added or removed (karrigan/kerrigan)."""
     if abs(len(a) - len(b)) > 1:
         return False
     if len(a) == len(b):
         return sum(x != y for x, y in zip(a, b)) == 1
+    # One is a letter longer: removing one letter from the longer must give the shorter
     short, long = sorted((a, b), key=len)
     return any(long[:i] + long[i + 1:] == short for i in range(len(long)))
 
 
 def meme_for(word):
-    """Return the meme/name translation for a word, or None."""
+    """Return the meme/name translation for a word, or None.
+
+    Checked in this order: the word itself (lol), then, for words that aren't ordinary
+    English words, a plural of a meme (teses -> tes + 们) and a near spelling of a longer
+    name (karrigan -> kerrigan).
+    """
     memes = _load_memes()
     w = word.lower()
     if w in memes:
@@ -532,6 +695,20 @@ def meme_for(word):
     return None
 
 
+# =========================================================================================
+# 11. The stupid pipeline: translate_word_by_word()
+#
+# The steps, numbered the same way in the code below:
+#   1. Split the sentence into words and punctuation
+#   2. Clean up: expand contractions, drop "the"
+#   3. Memes and names replace their words outright
+#   4. Split compound words into parts
+#   5. Translate every remaining word on its own, all in one request (the "plain" result)
+#   6. Past tense words that are also words take that word's meaning
+#   7. Stupid mode only: collect each word's possible meanings and spread the rarity
+#   8. Put the sentence back together
+# =========================================================================================
+
 def translate_word_by_word(text, source="en", target="zh-CN", timeout=10, rare=True,
                            target_rarity=TARGET_RARITY):
     """Translate each word separately, ignoring the sentence it sits in.
@@ -542,13 +719,15 @@ def translate_word_by_word(text, source="en", target="zh-CN", timeout=10, rare=T
     word's meaning (see IRREGULAR_PAST_FORMS). With rare=True every other word uses a less
     common meaning: some words stay natural and some go far off, averaging TARGET_RARITY.
     """
+    # Step 1: words (letters, digits, apostrophes) and single punctuation marks
     tokens = re.findall(r"[A-Za-z0-9']+|[^\sA-Za-z0-9']", text)
+    # Step 2: clean-up rules
     tokens = [part for t in tokens for part in expand_contraction(t)]
     tokens = [t for t in tokens if t.lower() not in SKIPPED_WORDS]
-    # Memes and names win over everything else
+    # Step 3: memes and names win over everything else
     memes = {t: meme_for(t) for t in tokens if re.match(r"[A-Za-z0-9']", t)}
     memes = {t: m for t, m in memes.items() if m}
-    # Split compound words into their parts and translate each part on its own
+    # Step 4: split compound words into their parts and translate each part on its own
     split_tokens, compound_parts = [], set()
     for t in tokens:
         parts = None if t in memes else split_compound(t)
@@ -557,10 +736,12 @@ def translate_word_by_word(text, source="en", target="zh-CN", timeout=10, rare=T
     tokens = split_tokens
     # Split parts can be memes too (playoff -> play + off -> 关)
     memes.update({t: _load_memes()[t.lower()] for t in tokens if t.lower() in _load_memes()})
+    # The words left to translate, each once (dict.fromkeys keeps their order)
     words = list(dict.fromkeys(t for t in tokens if re.match(r"[A-Za-z0-9']", t) and t not in memes))
     if not words:
         return "".join(memes.get(t, PUNCTUATION.get(t, t)) for t in tokens)
 
+    # Step 5: the usual translation of every word, in one request (with a fallback)
     error = None
     for backend in (_translate_words_chrome_ex, _translate_words_gtx):
         try:
@@ -571,7 +752,7 @@ def translate_word_by_word(text, source="en", target="zh-CN", timeout=10, rare=T
     else:
         raise RuntimeError(f"Google Translate request failed: {error}")
 
-    # Past tense forms that are also words on their own take that word's meaning
+    # Step 6: past tense forms that are also words on their own take that word's meaning
     past_forms = [w for w in words if w.lower() in IRREGULAR_PAST_FORMS]
     with ThreadPoolExecutor(max_workers=4) as pool:
         standalone = dict(zip(past_forms, pool.map(
@@ -580,11 +761,20 @@ def translate_word_by_word(text, source="en", target="zh-CN", timeout=10, rare=T
         if meaning:
             lookup[word] = meaning
 
+    # Step 7: stupid mode only, swap in wrong-but-real meanings
     if rare:
         # The proper translation tells us which meanings fit the sentence, so we can avoid them
         proper = translate(text, source, target, timeout)
 
         def word_options(word):
+            """Return [(rarity, meaning), ...] for one word, its fitting meaning first.
+
+            The fitting meaning (rarity 0) is the dictionary meaning that appears in the
+            proper translation, or else the plain translation. The other meanings come
+            from Google's dictionary, the capitalized word, EXTRA_MEANINGS and the round
+            trip. Anything that is (part of) the fitting meaning or the plain translation
+            is left out, so whatever gets picked really is a different meaning.
+            """
             # The fitting meaning (rarity 0) plus every other dictionary meaning
             try:
                 meanings = dictionary_meanings(word, source, target, timeout)
@@ -606,6 +796,7 @@ def translate_word_by_word(text, source="en", target="zh-CN", timeout=10, rare=T
                 meanings += [(ROUND_TRIP_RARITY, m) for m in round_trip_meanings(word, timeout)]
             except Exception:
                 pass  # the round trip is a bonus, skip it if Google says no
+            # others = {meaning: lowest rarity seen for it}, without the meanings to avoid
             others = {}
             for r, m in meanings:
                 alone = STANDALONE_FORMS.get(m, m)  # 次 -> 次数
@@ -617,19 +808,28 @@ def translate_word_by_word(text, source="en", target="zh-CN", timeout=10, rare=T
         # Past tense forms already use their standalone meaning, so they sit this out
         # Compound parts keep their natural meaning: the split is stupid enough already
         rare_words = [w for w in words if not standalone.get(w) and w not in compound_parts]
+        # Each word needs a few requests, so look the words up 4 at a time
         with ThreadPoolExecutor(max_workers=4) as pool:
             options = dict(zip(rare_words, pool.map(word_options, rare_words)))
         lookup.update(spread_rarity(options, target_rarity))
 
+    # Step 8: memes go in last so nothing overrides them; then rebuild the sentence with
+    # Chinese punctuation (Chinese doesn't put spaces between words)
     lookup.update(memes)
     return "".join(lookup.get(t, PUNCTUATION.get(t, t)) for t in tokens)
 
 
+# =========================================================================================
+# 12. Command line: py translator.py [--plain | --proper | --classical] [--rarity N] [text]
+# =========================================================================================
+
 def main():
+    """Translate the text given on the command line, or ask for lines one at a time."""
     # Make sure Chinese prints correctly in the Windows console
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
 
+    # Read the options; whatever is left is the text to translate
     args = sys.argv[1:]
     proper = "--proper" in args
     plain = "--plain" in args
@@ -640,6 +840,7 @@ def main():
         del args[i:i + 2]
     classical = "--classical" in args
     args = [a for a in args if a not in ("--proper", "--plain", "--classical")]
+    # convert is the function for the chosen mode: it takes English and returns Chinese
     if classical:
         convert, mode = translate_classical, "Classical Chinese"
     elif proper:
@@ -650,10 +851,12 @@ def main():
         convert = lambda text: translate_word_by_word(text, target_rarity=target_rarity)
         mode = f"stupid: word by word, rarity {target_rarity}"
 
+    # Text on the command line: translate it once and stop
     if args:
         print(convert(" ".join(args)))
         return
 
+    # No text: interactive mode, one line at a time until a blank line or Ctrl+C
     print(f"English -> Chinese ({mode}). Enter a blank line to quit.")
     while True:
         try:

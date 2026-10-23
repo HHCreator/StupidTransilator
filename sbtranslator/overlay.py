@@ -5,6 +5,18 @@
 Type an English sentence and press Enter (Shift+Enter for a new line); the translation shows
 below. Pick the translation mode with the buttons. Ctrl+Alt+T hides and shows the overlay
 from any app (Windows). Needs an internet connection, like the rest of the package.
+
+How it works: the window is built with tkinter, which only allows the main thread to touch
+the window. Anything slow runs in other threads instead, and they never touch the window:
+
+    main thread      builds the window, reacts to clicks and keys, and every POLL_MS
+                     milliseconds runs Overlay._poll(), which reads self.events
+    worker thread    one per translation (Overlay._work): calls sbtranslator.translate()
+                     and puts the result or the error in self.events
+    hotkey thread    listen_for_hotkey(): waits for Ctrl+Alt+T and puts ("toggle",)
+                     in self.events
+
+self.events is a queue.Queue, which is safe to use from several threads.
 """
 
 import ctypes
@@ -18,9 +30,10 @@ from . import MODES, translate
 from .translator import TARGET_RARITY
 
 TITLE = "SB Translator"
-POLL_MS = 50
-ALPHA = 0.96
+POLL_MS = 50  # how often the window checks for results, in milliseconds
+ALPHA = 0.96  # window opacity: slightly see-through
 
+# Colours: window border, background, panels (title bar, inputs), text and highlights
 BORDER, BG, PANEL = "#4a4f6a", "#1c1d26", "#2b2d3a"
 FG, MUTED, ACCENT, ACCENT_HOVER, ERROR = "#ececf3", "#8b8fa6", "#6f8cff", "#93a8ff", "#ff7b7b"
 
@@ -31,8 +44,10 @@ MODE_INFO = {
     "proper": ("Proper", "A normal, correct translation"),
     "classical": ("文言文", "A correct translation in Classical Chinese"),
 }
+# Fonts that can show Chinese, in order of preference; the first one installed is used
 CJK_FONTS = ("Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", "SimHei")
 
+# The global hotkey, in the numbers the Windows API uses for it
 HOTKEY_NAME = "Ctrl+Alt+T"
 MOD_ALT, MOD_CONTROL, MOD_NOREPEAT = 0x1, 0x2, 0x4000
 VK_T = 0x54
@@ -51,10 +66,11 @@ def listen_for_hotkey(events):
         user32 = ctypes.windll.user32
         registered = user32.RegisterHotKey(None, 1, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_T)
     except (AttributeError, OSError):
-        registered = False
+        registered = False  # ctypes.windll only exists on Windows
     events.put(("hotkey", bool(registered)))
     if not registered:
         return
+    # Windows message loop: GetMessageW waits until Windows sends this thread a message
     message = wintypes.MSG()
     while user32.GetMessageW(ctypes.byref(message), None, 0, 0) > 0:
         if message.message == WM_HOTKEY:
@@ -62,7 +78,10 @@ def listen_for_hotkey(events):
 
 
 class Overlay:
+    """The overlay window: mode buttons, rarity slider, input box, buttons and output box."""
+
     def __init__(self, root):
+        """Build the window inside root (a tk.Tk), place it, and start the hotkey thread."""
         self.root = root
         self.events = queue.Queue()  # results and hotkey presses coming from other threads
         self.request = 0  # id of the latest translation, older ones are dropped
@@ -74,6 +93,7 @@ class Overlay:
         self._build()
         self._on_mode()
 
+        # Start near the top right corner of the screen
         root.update_idletasks()
         x = root.winfo_screenwidth() - root.winfo_reqwidth() - 40
         root.geometry(f"+{max(x, 0)}+60")
@@ -85,6 +105,7 @@ class Overlay:
     # -- layout ---------------------------------------------------------------------------
 
     def _build(self):
+        """Create every widget, top to bottom: title bar, modes, rarity, input, buttons, output."""
         root = self.root
         root.title(TITLE)
         root.overrideredirect(True)  # no system title bar, we draw our own
@@ -176,6 +197,7 @@ class Overlay:
         self.output.pack(fill="x")
 
     def _button(self, parent, text, command, accent=False):
+        """Make a flat button; accent=True makes it the highlighted main button."""
         bg, fg = (ACCENT, BG) if accent else (PANEL, FG)
         return tk.Button(
             parent, text=text, command=command, bd=0, relief="flat", cursor="hand2",
@@ -187,13 +209,16 @@ class Overlay:
     # -- events ---------------------------------------------------------------------------
 
     def _drag_start(self, event):
+        """Remember where in the window the mouse grabbed the title bar."""
         self._drag_offset = (event.x_root - self.root.winfo_x(), event.y_root - self.root.winfo_y())
 
     def _drag_move(self, event):
+        """Move the window with the mouse while the title bar is held."""
         dx, dy = self._drag_offset
         self.root.geometry(f"+{event.x_root - dx}+{event.y_root - dy}")
 
     def _on_mode(self):
+        """A mode button was clicked: show its description, and the slider for stupid mode."""
         mode = self.mode.get()
         self.mode_hint.config(text=MODE_INFO.get(mode, ("", ""))[1])
         if mode == "stupid":
@@ -202,18 +227,22 @@ class Overlay:
             self.rarity_row.pack_forget()
 
     def _on_rarity(self, value=None):
+        """The slider moved: show the new rarity next to it."""
         self.rarity_label.config(text=f"Rarity {self.rarity.get():.1f}")
 
     def _set_status(self, text, error=False):
+        """Show a short message next to the buttons (red for errors)."""
         self.status.config(text=text, fg=ERROR if error else MUTED)
 
     def _show(self, text, error=False):
+        """Put text in the read-only output box (red for errors)."""
         self.output.config(state="normal")
         self.output.delete("1.0", "end")
         self.output.insert("1.0", text, "error" if error else "")
         self.output.config(state="disabled")
 
     def toggle(self):
+        """Hide the window, or bring it back on top with the cursor in the input box."""
         if self.root.state() == "withdrawn":
             self.root.deiconify()
             self.root.attributes("-topmost", True)
@@ -225,9 +254,12 @@ class Overlay:
     # -- translating ----------------------------------------------------------------------
 
     def translate(self, event=None):
+        """Start translating the input in a worker thread, so the window doesn't freeze."""
         text = self.input.get("1.0", "end").strip()
         if not text:
             return "break"
+        # Number each request: if the user translates again before an answer arrives,
+        # _poll() only shows the answer to the newest request
         self.request += 1
         mode, rarity = self.mode.get(), round(self.rarity.get(), 1)
         self._set_status("Translating…")
@@ -236,6 +268,7 @@ class Overlay:
         return "break"  # don't type the newline into the input
 
     def _work(self, request, text, mode, rarity):
+        """Translate in the worker thread and hand the result to the main thread via events."""
         # Runs in a worker thread: the network calls would freeze the window
         started = time.monotonic()
         try:
@@ -246,6 +279,7 @@ class Overlay:
             self.events.put(("result", request, result, mode, time.monotonic() - started))
 
     def copy(self):
+        """Copy the translation to the clipboard."""
         text = self.output.get("1.0", "end").strip()
         if text:
             self.root.clipboard_clear()
@@ -253,13 +287,18 @@ class Overlay:
             self._set_status("Copied")
 
     def _poll(self):
+        """Handle everything other threads put in self.events, then check again in POLL_MS.
+
+        Events: ("toggle",) from the hotkey, ("hotkey", ok) once the hotkey thread starts,
+        ("result", request, text, mode, seconds) and ("error", request, message) from workers.
+        """
         try:
             while True:
                 kind, *args = self.events.get_nowait()
                 if kind == "toggle":
                     self.toggle()
                 elif kind == "hotkey" and not args[0]:
-                    self.hotkey_hint.config(text="")
+                    self.hotkey_hint.config(text="")  # the hotkey doesn't work, so don't offer it
                 elif kind in ("result", "error") and args[0] == self.request:
                     if kind == "result":
                         _, text, mode, seconds = args
@@ -269,11 +308,12 @@ class Overlay:
                         self._show(args[1], error=True)
                         self._set_status("Translation failed", error=True)
         except queue.Empty:
-            pass
+            pass  # nothing left to handle for now
         self.root.after(POLL_MS, self._poll)
 
 
 def main():
+    """Open the overlay window and run it until it is closed."""
     try:
         ctypes.windll.shcore.SetProcessDpiAwareness(1)  # crisp text on scaled displays
     except (AttributeError, OSError):

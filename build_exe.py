@@ -25,11 +25,12 @@ def main():
             "--noconfirm", "--clean",
             "--onefile", "--windowed",  # one file, no console window
             "--name", "SBtranslator",
+            # Pack the data folder into the exe at sbtranslator/data, where the code looks
             "--add-data", f"{DATA}{os.pathsep}sbtranslator/data",
             "--distpath", os.path.join(ROOT, "dist"),
             "--workpath", os.path.join(ROOT, "build", "pyinstaller"),
             "--specpath", os.path.join(ROOT, "build"),
-            os.path.join(ROOT, "overlay.py"),
+            os.path.join(ROOT, "overlay.py"),  # the script the exe runs: the overlay window
         ],
         check=True,
         cwd=ROOT,
