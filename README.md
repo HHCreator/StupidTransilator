@@ -67,9 +67,17 @@ Without building, `pip install` also adds a `sbtranslator-overlay` command.
 ## Learning memes
 
 The stupid modes replace memes and names with their Chinese names: "lol" -> 英雄联盟,
-"frozen" -> 冰雪奇缘, "teses" -> 滔搏们 (plural of TES), "karrigan" -> 凯莉根 (close to Kerrigan).
+"frozen" -> 冰雪奇缘, "teses" -> 滔搏们 (plural of TES).
 These are learned from Wikipedia: for each page it takes the Chinese title and the English
 short names (one-word title, initials like LoL, 简称 abbreviations like TES, surnames).
+When the Chinese article gives a famous nickname or title, that wins over the name:
+Sarah Kerrigan calls herself the Queen of Blades, so "kerrigan" -> 刀锋女王.
+
+Unique words that aren't English words, like player names, are read as a typo of the most
+similar famous name, the way Google guesses what a typo meant: "karrigan" is one letter away
+from "kerrigan", so it also becomes 刀锋女王. A word may be 1 typo away from the name, or 2
+when it has 7 letters or more (`NEAR_NAME_MIN_LETTERS` and `NEAR_NAME_LONG` in
+`sbtranslator/translator.py`).
 
 ```
 py learn.py                                   # learn the pages listed in sbtranslator/data/meme_seeds.txt

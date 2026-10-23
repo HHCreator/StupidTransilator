@@ -2,9 +2,10 @@
 
 For each page it learns the Chinese name (from the page's Chinese Wikipedia link) and the
 English short names that point to it: the title, one-word redirects (LoL), abbreviations
-from the Chinese intro (简称TES) and a person's surname (Kerrigan). Results are saved to
-data/memes_learned.json, which translator.py reads. Hand-written entries in data/memes.json
-always win over learned ones.
+from the Chinese intro (简称TES) and a person's surname (Kerrigan). When the Chinese intro
+gives a famous nickname or title (自封刀锋女王), that is learned instead of the name, so
+kerrigan -> 刀锋女王. Results are saved to data/memes_learned.json, which translator.py
+reads. Hand-written entries in data/memes.json always win over learned ones.
 
 Usage:
     py learn.py "Top Esports" "Frozen (2013 film)"   # learn these pages
@@ -17,8 +18,9 @@ How it works, for a page like "Top Esports":
        the titles that redirect to the page                      -> english_pages()
     2. Chinese Wikipedia: the simplified title and the start of the article, where
        abbreviations are written as 简称TES                       -> chinese_pages()
-    3. Shorten the Chinese name (滔搏电子竞技俱乐部 -> 滔搏) and decide which English
-       words should map to it (tes -> 滔搏)                       -> clean_zh(), learn()
+    3. Shorten the Chinese name (滔搏电子竞技俱乐部 -> 滔搏), or use the nickname from
+       the intro, and decide which English words map to it (tes -> 滔搏)
+                                                   -> clean_zh(), find_nickname(), learn()
     4. Merge the result into data/memes_learned.json              -> main()
 """
 
@@ -41,6 +43,13 @@ REQUEST_DELAY = 0.5  # seconds between requests
 
 # Suffixes dropped from Chinese names so 滔搏电子竞技俱乐部 is learned as 滔搏
 ZH_SUFFIXES = ["电子竞技俱乐部", "电竞俱乐部", "电子竞技", "俱乐部", "战队"]
+
+# A famous nickname or title in the Chinese intro beats the plain name, so Sarah Kerrigan
+# ("自封刀锋女王（Queen of Blades）") is learned as kerrigan -> 刀锋女王, not 凯莉根.
+# Matches 2 to 6 Chinese characters after words like 自封 (self-styled), 人称 (known as)
+# or 绰号 (nicknamed), with or without quotes around them.
+NICKNAME = re.compile(r"(?:自封|自称|人称|号称|绰号|外号|被称为|被誉为)(?:是|叫|为)?[“「『\"]?"
+                      r"([一-鿿]{2,6})")
 
 
 # -- talking to Wikipedia ------------------------------------------------------------------
@@ -134,6 +143,12 @@ def clean_zh(name):
     return name
 
 
+def find_nickname(intro):
+    """Return the famous nickname or title in a Chinese intro (自封刀锋女王 -> 刀锋女王), or None."""
+    match = NICKNAME.search(intro)
+    return match.group(1) if match else None
+
+
 def single_word(name):
     """Return the lowercase key for a one-word English name, or None."""
     name = re.sub(r"\s*\(.*?\)", "", name).strip()  # "Frozen (2013 film)" -> "Frozen"
@@ -153,6 +168,9 @@ def learn(titles, seeds, common_words):
     for title, page in english.items():
         zh_title, intro = chinese.get(page["zh"], (page["zh"], ""))
         zh_name = clean_zh(zh_title)
+        # A famous nickname or title, when the intro has one, is what every short name of
+        # this page maps to (kerrigan -> 刀锋女王)
+        nickname = find_nickname(intro)
         # Short names: redirects that are the title's initials (League of Legends -> LoL)
         # and abbreviations from the Chinese intro (简称TES). Other redirects are usually
         # sub-topics (a champion's name redirecting to League of Legends), so skip them.
@@ -161,16 +179,16 @@ def learn(titles, seeds, common_words):
         aliases = [single_word(r) for r in page["redirects"]]
         aliases = [a for a in aliases if a and len(a) > 2 and a == initials]
         aliases += [a.lower() for a in re.findall(r"简称([A-Za-z0-9]{3,})", intro)]
-        # A person: learn the surname too (Sarah Kerrigan -> 凯莉根)
+        # A person: learn the surname too (Sarah Kerrigan -> 凯莉根, or her title 刀锋女王)
         en_parts = re.sub(r"\s*\(.*?\)", "", title).split()
         if "·" in zh_name and len(en_parts) == len(zh_name.split("·")):
-            learned.setdefault(en_parts[-1].lower(), zh_name.split("·")[-1])
+            learned.setdefault(en_parts[-1].lower(), nickname or zh_name.split("·")[-1])
         # A one-word title is learned as is when you asked for the page (Frozen -> 冰雪奇缘)
         if title in seeds and single_word(title):
-            learned.setdefault(single_word(title), zh_name)
+            learned.setdefault(single_word(title), nickname or zh_name)
         for alias in aliases:
             if alias not in common_words:  # don't take over everyday words like "top"
-                learned.setdefault(alias, zh_name)
+                learned.setdefault(alias, nickname or zh_name)
     return learned
 
 

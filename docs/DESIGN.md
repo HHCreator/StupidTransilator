@@ -99,8 +99,9 @@ classDiagram
         +MEMES_FILES
         -_memes
         +meme_for(word) str
+        +closest_name(word, names) str
         -_load_memes() dict
-        -_one_edit_apart(a, b) bool
+        -_typo_distance(a, b) int
     }
     class learn {
         <<learn.py 爬虫>>
@@ -108,6 +109,7 @@ classDiagram
         +english_pages(titles) dict
         +chinese_pages(zh_titles) dict
         +clean_zh(name) str
+        +find_nickname(intro) str
         -api(lang, params) dict
         +main()
     }
@@ -205,12 +207,12 @@ flowchart TD
 |---|---|---|
 | 1 切词 | 用正则把单词和标点分开 | `teses` `:` `wow` `frozen` `,` `your` `firepower` … |
 | 2 清理 | `can't` → `can` `not`；去掉 `the` | 少了 the，多了 can、not |
-| 3 梗词 | 查梗词典（第 10 部分） | teses → 滔搏们（TES 的复数），frozen → 冰雪奇缘，karrigan → 凯莉根（和 kerrigan 差一个字母），lol → 英雄联盟 |
+| 3 梗词 | 查梗词典（第 10 部分） | teses → 滔搏们（TES 的复数），frozen → 冰雪奇缘，karrigan → 刀锋女王（当成 kerrigan 的拼写错误），lol → 英雄联盟 |
 | 4 复合词 | 拆成常见词（第 5 部分），拆出来的部分也查梗词典 | firepower → fire + power，playoff → play + off，off 在 memes.json 里 → 关 |
 | 5 逐词翻译 | 剩下的词一次发给 Google | wow → 哇，fire → 火，power → 力量，same → 相同的，as → 作为，can → 能，not → 不是，even → 甚至 … |
 | 6 过去式 | 这句没有；比如 saw 会变成 锯 | |
 | 7 稀有度 | 先整句正常翻译，看哪些意思「对」；再给每个词列候选意思，随机分配稀有度预算 | even 的正常意思是「连」（正常译文里有「连」），候选有 偶数 0.92、更 1.5（往返查词找到的）、甚而 2.4；12 个词参加，预算 0.8 × 12 = 9.6 |
-| 8 拼句子 | 换成中文标点，中文词之间不加空格 | 滔搏们：哇冰雪奇缘，你的火力量是一样如同凯莉根，您罐头无连使他进入玩关，英雄联盟 |
+| 8 拼句子 | 换成中文标点，中文词之间不加空格 | 滔搏们：哇冰雪奇缘，你的火力量是同样如同刀锋女王，您可非偶数让他进入玩关，英雄联盟 |
 
 第 7 步每次随机，所以每次结果不一样。
 
@@ -229,7 +231,7 @@ flowchart TD
 | 7 过去式 | `standalone_meaning()` | saw、left 这种本身也是词的过去式，用它本身最常见的意思（锯、左） |
 | 8 稀有度 | `spread_rarity()` | 整句有一个稀有度预算（目标 × 词数），随机顺序给每个词分一部分，所以有的词离谱，有的词正常，平均值等于目标 |
 | 9 清理规则 | `expand_contraction()`、`SKIPPED_WORDS` | 展开 can't、I'm；去掉 the |
-| 10 梗词 | `meme_for()` | 查梗词典：先查原词，再查复数（加「们」），再查拼写只差一个字母的长名字 |
+| 10 梗词 | `meme_for()`、`closest_name()` | 查梗词典：先查原词，再查复数（加「们」）。不是英文单词的独特词（比如选手名）当成拼写错误，换成最像的有名的名字：karrigan 和 kerrigan 只差一个字母，所以变成 kerrigan 的译名 刀锋女王 |
 | 11 流程 | `translate_word_by_word()` | 把上面所有部分按第 4 节的 8 步串起来 |
 | 12 命令行 | `main()` | 读命令行参数，选模式，翻译一次或进入交互模式 |
 
@@ -238,7 +240,7 @@ flowchart TD
 | 文件 | 作用 |
 |---|---|
 | `sbtranslator/__init__.py` | 门面。外部程序只调用 `translate(text, mode, rarity)`，不需要知道每种模式由哪个函数实现 |
-| `sbtranslator/learn.py` | 爬虫。对每个维基页面：英文版拿中文链接和重定向（LoL），中文版拿简体标题和开头的「简称TES」，去掉「电子竞技俱乐部」这类后缀，存进 `memes_learned.json`。每次请求间隔 0.5 秒 |
+| `sbtranslator/learn.py` | 爬虫。对每个维基页面：英文版拿中文链接和重定向（LoL），中文版拿简体标题和开头的「简称TES」，去掉「电子竞技俱乐部」这类后缀。开头如果有「自封」「人称」「绰号」这样的外号（自封刀锋女王），就用外号代替名字。结果存进 `memes_learned.json`，每次请求间隔 0.5 秒 |
 | `sbtranslator/server.py` | HTTP 接口。Python 自带的 `ThreadingHTTPServer` 每来一个请求就开一个线程，交给 `Handler`；`Handler` 只负责把请求转成 `translate()` 调用，再把结果写成 JSON |
 | `sbtranslator/overlay.py` | 悬浮窗。tkinter 只允许主线程碰窗口，所以翻译在工作线程里做，热键在热键线程里等；两者都把结果放进队列 `events`，主线程每 50 毫秒用 `_poll()` 取出来显示 |
 | `build_exe.py` | 用 PyInstaller 把 Python、代码和 data 文件夹打成一个 exe |

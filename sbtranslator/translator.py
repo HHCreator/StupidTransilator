@@ -633,17 +633,26 @@ def expand_contraction(token):
 
 # Memes and names: learned from Wikipedia by learn.py (data/memes_learned.json), plus your
 # own entries in data/memes.json, which win. These always replace the word in the stupid
-# modes: lol -> 英雄联盟, teses -> 滔搏们 (plural), karrigan -> 凯莉根 (near spelling).
+# modes: lol -> 英雄联盟, teses -> 滔搏们 (plural), karrigan -> 刀锋女王 (near spelling).
 MEMES_FILES = [os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", name)
                for name in ("memes_learned.json", "memes.json")]
 _memes = None  # {lowercase English word: Chinese}, loaded by _load_memes()
 _all_words = None  # every word in the common word list, to tell ordinary words from names
 
+# Unique words (player names and the like, not English words) are read as a typo of the
+# most similar famous name in the meme dictionaries, the way Google guesses what a typo
+# meant: karrigan -> kerrigan -> 刀锋女王. Only names of at least NEAR_NAME_MIN_LETTERS
+# letters take part; a name may be 1 typo away, or 2 once the word has NEAR_NAME_LONG
+# letters or more. A typo is one letter changed, added or removed, or two letters swapped.
+NEAR_NAME_MIN_LETTERS = 5
+NEAR_NAME_LONG = 7
+
 
 def _load_memes():
     """Load the meme dictionaries into one dict {lowercase word: Chinese} (only once).
 
-    memes.json is loaded last, so your own entries override learned ones.
+    memes.json is loaded last, so your own entries override learned ones. Keys starting
+    with _ are notes for people (like "_comment"), not memes.
     """
     global _memes, _all_words
     if _memes is None:
@@ -651,7 +660,8 @@ def _load_memes():
         for path in MEMES_FILES:
             try:
                 with open(path, encoding="utf-8") as f:
-                    _memes.update({k.lower(): v for k, v in json.load(f).items()})
+                    _memes.update({k.lower(): v for k, v in json.load(f).items()
+                                   if not k.startswith("_")})
             except (OSError, ValueError):
                 pass  # a missing or broken file just means no memes from it
         with open(WORDS_FILE, encoding="utf-8") as f:
@@ -659,23 +669,48 @@ def _load_memes():
     return _memes
 
 
-def _one_edit_apart(a, b):
-    """True if b is a with exactly one letter changed, added or removed (karrigan/kerrigan)."""
-    if abs(len(a) - len(b)) > 1:
-        return False
-    if len(a) == len(b):
-        return sum(x != y for x, y in zip(a, b)) == 1
-    # One is a letter longer: removing one letter from the longer must give the shorter
-    short, long = sorted((a, b), key=len)
-    return any(long[:i] + long[i + 1:] == short for i in range(len(long)))
+def _typo_distance(a, b):
+    """How many typos turn a into b: letters changed, added or removed, or two
+    neighbouring letters swapped (karrigan -> kerrigan is 1, karigan -> kerrigan is 2)."""
+    # d[i][j] = typos between a[:i] and b[:j], filled in row by row
+    d = [[i + j if i * j == 0 else 0 for j in range(len(b) + 1)] for i in range(len(a) + 1)]
+    for i in range(1, len(a) + 1):
+        for j in range(1, len(b) + 1):
+            d[i][j] = min(d[i - 1][j] + 1,  # remove a letter
+                          d[i][j - 1] + 1,  # add a letter
+                          d[i - 1][j - 1] + (a[i - 1] != b[j - 1]))  # change a letter
+            if i > 1 and j > 1 and a[i - 1] == b[j - 2] and a[i - 2] == b[j - 1]:
+                d[i][j] = min(d[i][j], d[i - 2][j - 2] + 1)  # swap two letters
+    return d[len(a)][len(b)]
+
+
+def closest_name(word, names):
+    """Return the name in names that word is most likely a typo of, or None.
+
+    Allowed typos: 1, or 2 for words of NEAR_NAME_LONG letters or more (see the settings
+    above). The fewest typos wins; on a tie, a name with the same first letter, then the
+    one closest in length.
+    """
+    w = word.lower()
+    if len(w) < NEAR_NAME_MIN_LETTERS:
+        return None
+    allowed = 2 if len(w) >= NEAR_NAME_LONG else 1
+    candidates = []
+    for name in names:
+        if len(name) < NEAR_NAME_MIN_LETTERS or abs(len(name) - len(w)) > allowed:
+            continue  # too short to guess from, or too different in length to be close
+        typos = _typo_distance(w, name)
+        if 0 < typos <= allowed:
+            candidates.append((typos, name[0] != w[0], abs(len(name) - len(w)), name))
+    return min(candidates)[3] if candidates else None
 
 
 def meme_for(word):
     """Return the meme/name translation for a word, or None.
 
     Checked in this order: the word itself (lol), then, for words that aren't ordinary
-    English words, a plural of a meme (teses -> tes + 们) and a near spelling of a longer
-    name (karrigan -> kerrigan).
+    English words, a plural of a meme (teses -> tes + 们) and the most similar famous name
+    (karrigan -> kerrigan -> 刀锋女王, see closest_name).
     """
     memes = _load_memes()
     w = word.lower()
@@ -687,11 +722,11 @@ def meme_for(word):
     for ending in ("es", "s"):
         if w.endswith(ending) and w[: -len(ending)] in memes:
             return memes[w[: -len(ending)]] + "们"
-    # Near spelling of a longer name: karrigan -> kerrigan
-    if len(w) >= 5:
-        for key, value in memes.items():
-            if len(key) >= 5 and _one_edit_apart(w, key):
-                return value
+    # A unique word read as a typo of a famous name: karrigan -> kerrigan. Words Google's
+    # dictionary knows are real English words (just not common ones), so leave them alone.
+    name = closest_name(w, memes)
+    if name and not _is_real_word(w):
+        return memes[name]
     return None
 
 
