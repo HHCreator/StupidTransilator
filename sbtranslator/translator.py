@@ -314,6 +314,26 @@ EXTRA_MEANINGS = {
     "time": [(1.5, "次")],
 }
 
+# Memes learned from live stream chat by learn_chat.py (py listen.py douyu 6657): Chinese
+# danmu memes become possible stupid meanings of an English word (dragon -> 恶龙呢), at
+# this rarity. data/chat_meanings.json holds them as {english word: [memes]}.
+CHAT_MEANINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data",
+                                  "chat_meanings.json")
+CHAT_MEANING_RARITY = 1.0
+_chat_meanings = None  # loaded by chat_meanings()
+
+
+def chat_meanings(word):
+    """Return the stream chat memes learned for an English word (often none)."""
+    global _chat_meanings
+    if _chat_meanings is None:
+        try:
+            with open(CHAT_MEANINGS_FILE, encoding="utf-8") as f:
+                _chat_meanings = json.load(f)
+        except (OSError, ValueError):
+            _chat_meanings = {}  # nothing learned from chat yet
+    return _chat_meanings.get(word.lower(), [])
+
 
 # Irregular past tense / past participle forms. When one of these is also a word on its
 # own (saw, left, rose, felt, found...), the stupid modes use that word's own meaning
@@ -631,11 +651,12 @@ def expand_contraction(token):
 # 10. Memes and names: lol -> 英雄联盟, frozen -> 冰雪奇缘, teses -> 滔搏们
 # =========================================================================================
 
-# Memes and names: learned from Wikipedia by learn.py (data/memes_learned.json), plus your
+# Memes and names: learned from Wikipedia by learn.py (data/memes_learned.json) and from
+# English stream chat by learn_chat.py (data/memes_chat.json, KEKW-style words), plus your
 # own entries in data/memes.json, which win. These always replace the word in the stupid
 # modes: lol -> 英雄联盟, teses -> 滔搏们 (plural), karrigan -> 刀锋女王 (near spelling).
 MEMES_FILES = [os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", name)
-               for name in ("memes_learned.json", "memes.json")]
+               for name in ("memes_learned.json", "memes_chat.json", "memes.json")]
 _memes = None  # {lowercase English word: Chinese}, loaded by _load_memes()
 _all_words = None  # every word in the common word list, to tell ordinary words from names
 
@@ -765,7 +786,8 @@ def translate_word_by_word(text, source="en", target="zh-CN", timeout=10, rare=T
     # Step 4: split compound words into their parts and translate each part on its own
     split_tokens, compound_parts = [], set()
     for t in tokens:
-        parts = None if t in memes else split_compound(t)
+        # Memes, and words with a meme meaning from stream chat (dragon), stay whole
+        parts = None if t in memes or chat_meanings(t) else split_compound(t)
         split_tokens += parts or [t]
         compound_parts.update(parts or [])
     tokens = split_tokens
@@ -806,8 +828,8 @@ def translate_word_by_word(text, source="en", target="zh-CN", timeout=10, rare=T
 
             The fitting meaning (rarity 0) is the dictionary meaning that appears in the
             proper translation, or else the plain translation. The other meanings come
-            from Google's dictionary, the capitalized word, EXTRA_MEANINGS and the round
-            trip. Anything that is (part of) the fitting meaning or the plain translation
+            from Google's dictionary, the capitalized word, EXTRA_MEANINGS, memes learned
+            from stream chat and the round trip. Anything that is (part of) the fitting meaning or the plain translation
             is left out, so whatever gets picked really is a different meaning.
             """
             # The fitting meaning (rarity 0) plus every other dictionary meaning
@@ -838,6 +860,11 @@ def translate_word_by_word(text, source="en", target="zh-CN", timeout=10, rare=T
                 if any(x in a or a in x for x in (m, alone) for a in avoid if a):
                     continue
                 others[alone] = min(r, others.get(alone, r))
+            # Memes from stream chat often contain the fitting meaning (恶龙呢 has 龙 in it);
+            # that is the joke, so they only have to be different from it
+            for m in chat_meanings(word):
+                if m not in avoid:
+                    others[m] = min(CHAT_MEANING_RARITY, others.get(m, CHAT_MEANING_RARITY))
             return [(0.0, natural)] + [(r, m) for m, r in others.items()]
 
         # Past tense forms already use their standalone meaning, so they sit this out

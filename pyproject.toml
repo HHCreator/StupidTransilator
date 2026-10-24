@@ -17,6 +17,7 @@ Homepage = "https://github.com/HHCreator/StupidTransilator"
 [project.scripts]
 sbtranslator = "sbtranslator.translator:main"
 sbtranslator-learn = "sbtranslator.learn:main"
+sbtranslator-listen = "sbtranslator.learn_chat:main"
 sbtranslator-server = "sbtranslator.server:main"
 
 [project.gui-scripts]

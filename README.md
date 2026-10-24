@@ -87,6 +87,28 @@ py learn.py --links 50 "League of Legends"    # also learn up to 50 pages each o
 
 Learned entries go to `sbtranslator/data/memes_learned.json`. Put your own in `sbtranslator/data/memes.json`; they win.
 
+## Learning memes from live stream chat
+
+Meme culture lives in stream chat more than on Wikipedia, so the translator can also learn
+from a live Douyu room or Twitch channel. It only reads the chat (anonymously, nothing is
+ever sent), keeps the messages in `sbtranslator/.cache/chat/` (with user names replaced by a
+short hash), and learns from everything recorded so far:
+
+```
+py listen.py douyu 6657                 # listen to Douyu room 6657 for 10 minutes, then learn
+py listen.py twitch xqc --minutes 30    # listen to twitch.tv/xqc for 30 minutes
+py listen.py douyu 6657 --minutes 0     # learn again from what was already recorded
+```
+
+Something counts as a meme when at least 3 different people type it (`--people N` changes
+that): a short danmu like 恶龙呢, or a word in English chat that isn't an English word, like
+LULW. Chinese memes are translated to English, and the last real word of that English gets
+the meme as a possible stupid meaning: 恶龙呢 is "Where's the dragon?", so "dragon" can come
+out as 恶龙呢 (`sbtranslator/data/chat_meanings.json`). English memes that Google can
+translate become memes like the Wikipedia ones: LULW -> 卢尔夫
+(`sbtranslator/data/memes_chat.json`). The rest are printed so you can add them to
+`memes.json` yourself. The room has to be live while you listen.
+
 Other stupid-mode rules: contractions are expanded first (can't -> can not), "the" is dropped
 (Chinese has no articles), compound parts keep their natural meaning (firepower -> 火 + 力量),
 and words of 4 letters or fewer are never split (into stays 进入).

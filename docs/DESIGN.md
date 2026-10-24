@@ -20,6 +20,7 @@ SBtranslator/
 ├── translator.py      根目录的入口：py translator.py "..."（只调用包里的 main()）
 ├── learn.py           根目录的入口：py learn.py
 ├── overlay.py         根目录的入口：py overlay.py，也是 exe 的入口
+├── listen.py          根目录的入口：py listen.py douyu 6657
 ├── build_exe.py       用 PyInstaller 打包成 dist/SBtranslator.exe
 ├── pyproject.toml     pip 安装配置，定义 sbtranslator 等 4 个命令
 ├── docs/DESIGN.md     这份文档
@@ -27,6 +28,8 @@ SBtranslator/
     ├── __init__.py    门面：translate(text, mode, rarity)，外部程序只调用它
     ├── translator.py  翻译逻辑和命令行，分 12 个部分
     ├── learn.py       维基百科爬虫，学梗和人名
+    ├── chat.py        读斗鱼和 Twitch 直播间的弹幕（只读）
+    ├── learn_chat.py  从弹幕里找梗
     ├── server.py      HTTP 接口，给其他语言的程序用
     ├── overlay.py     置顶悬浮窗
     └── data/          词表、梗词典、简繁转换表
@@ -113,6 +116,19 @@ classDiagram
         -api(lang, params) dict
         +main()
     }
+    class chat {
+        <<chat.py 读弹幕>>
+        +messages(source, room, seconds)
+        +douyu_messages(room, seconds)
+        +twitch_messages(channel, seconds)
+    }
+    class learn_chat {
+        <<learn_chat.py 弹幕学梗>>
+        +record(source, room, minutes) int
+        +find_memes(min_people) tuple
+        +learn(chinese, english) tuple
+        +main()
+    }
     class BaseHTTPRequestHandler {
         <<Python 标准库>>
     }
@@ -140,6 +156,8 @@ classDiagram
         <<data 文件夹>>
         memes_learned.json
         memes.json
+        memes_chat.json
+        chat_meanings.json
         meme_seeds.txt
         words/common_english.txt
         opencc/STCharacters.txt
@@ -151,6 +169,7 @@ classDiagram
         Google Translate
         Bing Translator
         Wikipedia API
+        斗鱼 / Twitch 弹幕
     }
 
     BaseHTTPRequestHandler <|-- Handler
@@ -170,6 +189,10 @@ classDiagram
     ClassicalChinese ..> DataFiles : 读 opencc
     learn ..> DataFiles : 写 memes_learned.json
     learn ..> OnlineServices : Wikipedia
+    learn_chat ..> chat : 读弹幕
+    chat ..> OnlineServices : 斗鱼 / Twitch
+    learn_chat ..> DataFiles : 写 chat_meanings.json
+    Meanings ..> DataFiles : 读 chat_meanings.json
     GoogleTranslate ..> OnlineServices : Google
     ClassicalChinese ..> OnlineServices : Bing
 ```
@@ -241,6 +264,8 @@ flowchart TD
 |---|---|
 | `sbtranslator/__init__.py` | 门面。外部程序只调用 `translate(text, mode, rarity)`，不需要知道每种模式由哪个函数实现 |
 | `sbtranslator/learn.py` | 爬虫。对每个维基页面：英文版拿中文链接和重定向（LoL），中文版拿简体标题和开头的「简称TES」，去掉「电子竞技俱乐部」这类后缀。开头如果有「自封」「人称」「绰号」这样的外号（自封刀锋女王），就用外号代替名字。结果存进 `memes_learned.json`，每次请求间隔 0.5 秒 |
+| `sbtranslator/chat.py` | 读直播间弹幕，只读、匿名，从不发言。Twitch 用匿名 IRC；斗鱼用 WebSocket 加斗鱼自己的 STT 格式，WebSocket 是用标准库自己写的，所以不用装别的包 |
+| `sbtranslator/learn_chat.py` | 从弹幕学梗。弹幕存在缓存文件夹里（用户名换成短哈希）。至少 3 个不同的人发过的短弹幕算中文梗，翻成英文后，最后一个有意义的词得到这个梗作为傻瓜意思（恶龙呢 → "Where's the dragon?" → dragon）；英文聊天里不是英文单词的词（LULW）算英文梗，Google 能翻的就变成梗词 |
 | `sbtranslator/server.py` | HTTP 接口。Python 自带的 `ThreadingHTTPServer` 每来一个请求就开一个线程，交给 `Handler`；`Handler` 只负责把请求转成 `translate()` 调用，再把结果写成 JSON |
 | `sbtranslator/overlay.py` | 悬浮窗。tkinter 只允许主线程碰窗口，所以翻译在工作线程里做，热键在热键线程里等；两者都把结果放进队列 `events`，主线程每 50 毫秒用 `_poll()` 取出来显示 |
 | `build_exe.py` | 用 PyInstaller 把 Python、代码和 data 文件夹打成一个 exe |
@@ -251,9 +276,12 @@ flowchart TD
 |---|---|---|
 | `data/memes_learned.json` | 爬虫学到的梗：`{"lol": "英雄联盟", ...}` | learn.py 写，第 10 部分读 |
 | `data/memes.json` | 你自己写的梗，优先级最高 | 你写，第 10 部分读 |
+| `data/memes_chat.json` | 从英文弹幕学到的梗：`{"lulw": "卢尔夫", ...}` | learn_chat.py 写，第 10 部分读 |
+| `data/chat_meanings.json` | 从中文弹幕学到的傻瓜意思：`{"dragon": ["恶龙呢"]}` | learn_chat.py 写，第 11 部分的候选意思读 |
 | `data/meme_seeds.txt` | 不带参数运行 learn.py 时要学的维基页面 | 你写，learn.py 读 |
 | `data/words/common_english.txt` | 最常见的 1 万个英文词，按频率排序 | 复合词、往返查词、梗词判断「是不是普通词」都用它 |
 | `data/opencc/*.txt` | 简体 → 繁体对照表 | 第 2 部分读 |
+| `.cache/chat/*.tsv` | 录下来的弹幕，每行「用户哈希 + 内容」 | learn_chat.py 读写，不进 git |
 | `.cache/round_trip.json` | 往返查词的缓存（exe 里放在 %LOCALAPPDATA%\SBtranslator） | 第 6 部分读写，git 不管它 |
 
 ## 7. 为什么这样设计
@@ -272,6 +300,7 @@ flowchart TD
 |---|---|
 | 整体更傻或更正常 | `TARGET_RARITY`（第 3 部分），或运行时加 `--rarity` |
 | 加一个梗 | `data/memes.json`，比如 `"off": "关"` |
+| 从直播间学梗 | 直播时运行 `py listen.py douyu 6657`，学到的越积越多 |
 | 让爬虫学新的页面 | `data/meme_seeds.txt` 加一行，然后运行 `py learn.py` |
 | 单字换成完整的词（次 → 次数） | `STANDALONE_FORMS`（第 3 部分） |
 | 补充 Google 词典没有的意思 | `EXTRA_MEANINGS`（第 3 部分） |
