@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sbtranslator"
+version = "0.1.0"
+description = "Translate English to Chinese in a stupid way (word by word, wrong-but-real meanings)"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.8"
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/HHCreator/StupidTransilator"
+
+[project.scripts]
+sbtranslator = "sbtranslator.translator:main"
+sbtranslator-learn = "sbtranslator.learn:main"
+sbtranslator-listen = "sbtranslator.learn_chat:main"
+sbtranslator-server = "sbtranslator.server:main"
+
+[project.gui-scripts]
+sbtranslator-overlay = "sbtranslator.overlay:main"
+
+[tool.setuptools]
+packages = ["sbtranslator"]
+
+[tool.setuptools.package-data]
+sbtranslator = ["data/*.json", "data/*.txt", "data/*/*.txt", "data/*/*.md"]

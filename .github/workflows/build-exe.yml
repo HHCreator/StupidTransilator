@@ -1,0 +1,50 @@
+# Builds the overlay program on Windows and publishes it as a GitHub release, so the download
+# link in the README always has the newest build. Runs on each push to the standalone branch
+# when the code or data changed. A pull request into standalone only builds it (no release);
+# the zip is under Artifacts on the run's page, to try before merging.
+name: Build exe
+
+on:
+  push:
+    branches: [standalone]
+    paths: ["sbtranslator/**", "overlay.py", "build_exe.py", ".github/workflows/build-exe.yml"]
+  pull_request:
+    branches: [standalone]
+    paths: ["sbtranslator/**", "overlay.py", "build_exe.py", ".github/workflows/build-exe.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write  # to publish the release
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # Compile PyInstaller's bootloader (the small program at the start of the exe) here
+      # instead of using the prebuilt one: malware made with PyInstaller uses the prebuilt
+      # one too, so Windows Defender often flags any exe that starts with it
+      - name: Install PyInstaller with its own bootloader
+        env:
+          PYINSTALLER_COMPILE_BOOTLOADER: "1"
+        run: python -m pip install --no-binary pyinstaller pyinstaller
+      - run: python build_exe.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SBtranslator-windows
+          path: dist/SBtranslator-windows.zip
+      # Replace the "latest" release so its download link stays the same
+      - name: Publish release
+        if: github.event_name != 'pull_request'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest --cleanup-tag --yes || true
+          gh release create latest dist/SBtranslator-windows.zip \
+            --title "SBtranslator (latest build)" \
+            --notes "Built from ${GITHUB_SHA::7}. Unzip and run SBtranslator.exe inside the folder." \
+            --target "$GITHUB_SHA" --latest
