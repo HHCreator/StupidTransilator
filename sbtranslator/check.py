@@ -1,9 +1,15 @@
-"""Proofread stupid translations with a local AI model (DeepSeek through Ollama).
+"""Let a local AI model (DeepSeek through Ollama) help with stupid translations.
 
-    py translator.py --check "The cat is sitting on the table"
+    py translator.py --check "@frozen: teses, your HLTV top is 0, lol"
     sbtranslator.translate("...", check=True)
 
-The stupid mode makes several versions of the sentence (VARIANTS). A local model picks the
+In the stupid mode (inject.py) the model writes the sentence: it gets the English, its real
+meaning and the stupid words, and writes fluent Chinese that uses every stupid word word
+for word. The program checks that every stupid word is really there and asks again if not
+(BUILD_ATTEMPTS times); if the model never gets it right, Google's version is used.
+
+In the wordy and plain modes it proofreads instead: the wordy mode makes several versions
+of the sentence (VARIANTS). A local model picks the
 funniest one that still reads like a Chinese sentence, and may add or remove a few small
 function words (的, 了, 在 ...) so it reads better. It may not fix the wrong words: they are
 the joke. If the model changes more than function words, its edit is thrown away and the
@@ -24,6 +30,7 @@ import urllib.error
 import urllib.request
 import warnings
 
+from .inject import translate_injected
 from .translator import TARGET_RARITY, translate, translate_word_by_word
 
 OLLAMA_URL = "http://127.0.0.1:11434"  # where Ollama listens on this computer
@@ -42,6 +49,14 @@ INSTRUCTIONS = """你是「傻瓜翻译」的校对员。傻瓜翻译故意逐�
 3. 不能把故意用错的词改对，不能换词，不能加新的实词，不能调换词的顺序。
 
 只输出 JSON：{"choice": 候选编号, "text": "校对后的句子"}"""
+
+
+BUILD_INSTRUCTIONS = """你在帮一个搞笑翻译器造句。你会拿到一句英文、它的正确中文意思，和几个故意翻错的中文词（笑点）。
+
+写一句通顺自然的中文：意思跟着英文走，但英文里对应的那几个词，必须换成给你的中文词，一字不差地用上，不能改字、不能换成同义词、不能加引号。其他部分像正常翻译一样通顺。
+
+只输出 JSON：{"text": "句子"}"""
+BUILD_ATTEMPTS = 3  # how many times the model may try to use every stupid word
 
 
 class CheckUnavailable(Exception):
@@ -121,3 +136,49 @@ def checked_translation(text, rarity=TARGET_RARITY, rare=True, model=MODEL):
     except CheckUnavailable as error:
         warnings.warn(f"Translation not checked: {error}")
         return candidates[0]
+
+
+def build_injected(details, model=MODEL, timeout=TIMEOUT):
+    """Have the local model write the stupid sentence around the stupid words.
+
+    details comes from inject.translate_injected(details=True). Returns the model's sentence
+    once it contains every stupid word, or Google's version after BUILD_ATTEMPTS tries.
+    """
+    required = list(dict.fromkeys(details["words"].values()))
+    pairs = "\n".join(f"{english} -> {chinese}" for english, chinese in details["words"].items())
+    question = (f"英文：{details['english']}\n"
+                f"正确的意思：{details['proper']}\n"
+                f"必须一字不差用上的词（英文 -> 中文）：\n{pairs}")
+    messages = [{"role": "system", "content": BUILD_INSTRUCTIONS},
+                {"role": "user", "content": question}]
+    for attempt in range(BUILD_ATTEMPTS):
+        reply = _ask(messages, model, timeout)
+        try:
+            text = str(json.loads(reply).get("text", "")).strip()
+        except (ValueError, AttributeError):
+            text = ""
+        # The model sometimes puts spaces between Chinese words; Chinese has none
+        text = re.sub(r"(?<=[^\x00-\x7f]) +| +(?=[^\x00-\x7f])", "", text)
+        missing = [w for w in required if w not in text]
+        if text and not missing:
+            return text
+        # Tell the model what went wrong and let it try again
+        messages += [{"role": "assistant", "content": reply},
+                     {"role": "user", "content": "这些词没有一字不差地出现：" + "、".join(missing or required)
+                      + "。请重写，必须原样用上它们。"}]
+    return details["result"]
+
+
+def checked_injected(text, model=MODEL):
+    """The stupid translation, with the sentence written by the local model.
+
+    Falls back to Google's version, with a warning, if the model isn't available.
+    """
+    details = translate_injected(text, details=True)
+    if not details["words"]:
+        return details["result"]  # nothing stupid to place: the normal translation
+    try:
+        return build_injected(details, model)
+    except CheckUnavailable as error:
+        warnings.warn(f"Sentence not written by the model: {error}")
+        return details["result"]

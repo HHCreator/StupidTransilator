@@ -2,11 +2,12 @@
 
 这份文档说明代码是怎么设计的：有哪些部分、每部分做什么、一句话从输入到输出经过哪些步骤。代码里的注释讲细节，这里讲整体。
 
-## 1. 四种模式
+## 1. 五种模式
 
 | 模式 | 背后的函数 | 做法 | "Long time no see" 的结果 |
 |---|---|---|---|
-| stupid（默认） | `translate_word_by_word()` | 每个词单独翻译，一部分词换成「错但真实存在」的意思 | 久时间非望、长期时间没有望（每次不同） |
+| stupid（默认） | `inject.translate_injected()` | 整句正常翻译，只把几个词换成蠢词（梗名、缩写直译、术语的日常意思等），读起来通顺但意思不对 | @frozen: teses, your HLTV top is 0, lol → @冰雪奇缘：滔搏们，你的一半生活电视顶部是0，英雄联盟 |
+| wordy | `translate_word_by_word()` | 每个词单独翻译，一部分词换成「错但真实存在」的意思 | Long time no see → 久时间非望、长期时间没有望（每次不同） |
 | plain | `translate_word_by_word(rare=False)` | 每个词单独翻译，用常见意思 | 长的时间不看 |
 | proper | `translate()` | 整句正常翻译 | 好久不见 |
 | classical | `translate_classical()` | 整句翻成文言文，繁体字 | 久違矣 |
@@ -27,6 +28,8 @@ SBtranslator/
 └── sbtranslator/      真正的代码（一个 Python 包）
     ├── __init__.py    门面：translate(text, mode, rarity)，外部程序只调用它
     ├── translator.py  翻译逻辑和命令行，分 12 个部分
+    ├── inject.py      默认的傻瓜模式：正常翻译打底，塞进蠢词
+    ├── phrases.py     从弹幕做短语表（载物玩耍 → zywoo play）
     ├── learn.py       维基百科爬虫，学梗和人名
     ├── chat.py        读斗鱼和 Twitch 直播间的弹幕（只读）
     ├── learn_chat.py  从弹幕里找梗
@@ -42,6 +45,22 @@ SBtranslator/
 
 ```mermaid
 classDiagram
+    class inject {
+        <<inject.py 注入模式>>
+        +translate_injected(text, details) str
+        +inject(text) tuple
+        +stupid_word(token, proper) str
+        +handle_word(token, any_unique) str
+        -_repair(output, wanted) str
+    }
+    class phrases {
+        <<phrases.py 弹幕短语表>>
+        +make_candidates(chinese_memes) dict
+        +review()
+        +split_words(phrase) list
+        +to_english(word, handles) str
+        +nicknames() dict
+    }
     class sbtranslator {
         <<__init__.py 门面>>
         +MODES
@@ -167,6 +186,10 @@ classDiagram
         memes_learned.json
         memes.json
         memes_chat.json
+        stupid_words.json
+        phrases.json
+        nicknames.json
+        players.txt
         chat_meanings.json
         meme_seeds.txt
         words/common_english.txt
@@ -186,7 +209,15 @@ classDiagram
     BaseHTTPRequestHandler <|-- Handler
     Handler ..> sbtranslator : translate()
     Overlay ..> sbtranslator : translate()
-    sbtranslator ..> Pipeline : stupid / plain
+    sbtranslator ..> inject : stupid
+    sbtranslator ..> Pipeline : wordy / plain
+    inject ..> GoogleTranslate : 整句翻译
+    inject ..> Memes : 梗名
+    inject ..> CompoundWords : 复合词
+    inject ..> phrases : 外号
+    inject ..> DataFiles : 读 stupid_words.json、phrases.json
+    learn_chat ..> phrases : 出短语候选
+    phrases ..> DataFiles : 写 phrases.json
     sbtranslator ..> GoogleTranslate : proper
     sbtranslator ..> ClassicalChinese : classical
     sbtranslator ..> check : check=True
@@ -218,9 +249,22 @@ classDiagram
 - 空心三角箭头是继承：`Handler` 继承 Python 自带的 `BaseHTTPRequestHandler`。
 - 虚线箭头是「调用 / 用到」，箭头上的字说明用来做什么。
 
-## 4. 傻瓜模式的流程
+## 4. 两种傻瓜模式的流程
 
-这是整个程序的核心，在 `translate_word_by_word()` 里。代码里也按这 8 步编号。
+### 默认的傻瓜模式（注入，`inject.py`）
+
+逐词翻译读起来像乱码，而好笑的机翻梗是「通顺但意思不对」：只有几个词是蠢的，其他都是正常中文。所以默认模式这样做：
+
+1. 先整句正常翻译，知道每个词在这句里的正确意思。
+2. 挑出要变蠢的词，查出它的蠢译法（`stupid_word()`），按这个顺序：弹幕短语表（life game → 生命游戏，最长的优先）、梗名和战队名（frozen → 冰雪奇缘，复数随机变成「滔搏们」或「一些滔搏」）、选手外号（zywoo → 载物）、缩写展开再逐词直译（HLTV → half life tv → 一半生活电视）、选手 ID 读成最近的英文词（m0NESY → money → 钱）、术语的日常意思（major → 主要，只有正常译文里没有这个意思时才换）、复合词、像名人名字的独特词（karrigan → 刀锋女王）。
+3. 把蠢词用【】直接写进英文原句（your 【主要】 champion），整句交给 Google 翻译，Google 会围着这些词把语序和虚词补成正常中文。
+4. 去掉【】，把 Google 改动过的蠢词按字形换回来（滔滔搏们 → 滔搏们）。有词丢了就换「」再试一次。
+
+加 `--check` 时，第 3 步改由本地模型造句：要求每个蠢词一字不差地出现，程序检查，不行就再问，最多 3 次，还不行就用 Google 的版本。Google 最常改掉的是动词（clutch 离合器、play 玩耍），本地模型能放进去。
+
+### 逐词模式（wordy，`translate_word_by_word()`）
+
+原来的傻瓜模式，翻译腔更重，每个词单独翻译。代码里也按这 8 步编号。
 
 ```mermaid
 flowchart TD
@@ -280,7 +324,9 @@ flowchart TD
 | `sbtranslator/learn.py` | 爬虫。对每个维基页面：英文版拿中文链接和重定向（LoL），中文版拿简体标题和开头的「简称TES」，去掉「电子竞技俱乐部」这类后缀。开头如果有「自封」「人称」「绰号」这样的外号（自封刀锋女王），就用外号代替名字。结果存进 `memes_learned.json`，每次请求间隔 0.5 秒 |
 | `sbtranslator/chat.py` | 读直播间弹幕，只读、匿名，从不发言。Twitch 用匿名 IRC；斗鱼用 WebSocket 加斗鱼自己的 STT 格式，WebSocket 是用标准库自己写的，所以不用装别的包 |
 | `sbtranslator/learn_chat.py` | 从弹幕学梗。弹幕存在缓存文件夹里（用户名换成短哈希）。至少 3 个不同的人发过的短弹幕算中文梗，翻成英文后，最后一个有意义的词得到这个梗作为傻瓜意思（恶龙呢 → "Where's the dragon?" → dragon）；英文聊天里不是英文单词的词（LULW）算英文梗，Google 能翻的就变成梗词 |
-| `sbtranslator/check.py` | 本地模型校对（`--check`）。傻瓜模式一次生成 4 个版本（共用同一批查询，不多花请求），交给本机 Ollama 里的 DeepSeek-R1 14b，让它挑最好笑、但还读得通的一个，只准增删「的、了、在」这类虚词。程序会核对：去掉虚词和标点后，句子必须和它挑的那个一模一样，否则就不用它的修改 |
+| `sbtranslator/inject.py` | 默认的傻瓜模式，见第 4 节。表在 `data/stupid_words.json`（战队名和撞名的游戏缩写、缩写展开、术语的日常意思），可以自己加 |
+| `sbtranslator/phrases.py` | 弹幕短语表。至少 3 个人发过的短弹幕（8 个字以内）切成词，每个词找英文：先查外号表（载物 → zywoo），再看英文意思里有没有选手 ID（设备 → device），都没有就用最常见的意思（生命 → life），拼成 life game → 生命游戏 这样的候选。`py listen.py --review` 逐个确认，确认的进 `phrases.json` |
+| `sbtranslator/check.py` | 本地模型（`--check`）。默认傻瓜模式里由它造句（见第 4 节）；wordy 和 plain 模式里是校对。傻瓜模式一次生成 4 个版本（共用同一批查询，不多花请求），交给本机 Ollama 里的 DeepSeek-R1 14b，让它挑最好笑、但还读得通的一个，只准增删「的、了、在」这类虚词。程序会核对：去掉虚词和标点后，句子必须和它挑的那个一模一样，否则就不用它的修改 |
 | `sbtranslator/server.py` | HTTP 接口。Python 自带的 `ThreadingHTTPServer` 每来一个请求就开一个线程，交给 `Handler`；`Handler` 只负责把请求转成 `translate()` 调用，再把结果写成 JSON |
 | `sbtranslator/overlay.py` | 悬浮窗。tkinter 只允许主线程碰窗口，所以翻译在工作线程里做，热键在热键线程里等；两者都把结果放进队列 `events`，主线程每 50 毫秒用 `_poll()` 取出来显示 |
 | `build_exe.py` | 用 PyInstaller 把 Python、代码和 data 文件夹打成一个 exe |
@@ -292,6 +338,11 @@ flowchart TD
 | `data/memes_learned.json` | 爬虫学到的梗：`{"lol": "英雄联盟", ...}` | learn.py 写，第 10 部分读 |
 | `data/memes.json` | 你自己写的梗，优先级最高 | 你写，第 10 部分读 |
 | `data/memes_chat.json` | 从英文弹幕学到的梗：`{"lulw": "卢尔夫", ...}` | learn_chat.py 写，第 10 部分读 |
+| `data/stupid_words.json` | 默认傻瓜模式的手写表：names（导航、魔兽世界）、acronyms（hltv → half life tv）、everyday（major → 主要） | 你写，inject.py 读 |
+| `data/phrases.json` | 确认过的短语：`{"life game": "生命游戏"}` | `py listen.py --review` 写，inject.py 读 |
+| `data/phrase_candidates.json` | 等你确认的短语候选，和拒绝过的 | phrases.py 读写 |
+| `data/nicknames.json` | 选手中文外号：`{"载物": "zywoo"}`，两个方向都用 | 你写，phrases.py 和 inject.py 读 |
+| `data/players.txt` | 选手 ID 名单，用来认出 设备 → device | 你写，phrases.py 读 |
 | `data/chat_meanings.json` | 从中文弹幕学到的傻瓜意思：`{"dragon": ["恶龙呢"]}` | learn_chat.py 写，第 11 部分的候选意思读 |
 | `data/meme_seeds.txt` | 不带参数运行 learn.py 时要学的维基页面 | 你写，learn.py 读 |
 | `data/words/common_english.txt` | 最常见的 1 万个英文词，按频率排序 | 复合词、往返查词、梗词判断「是不是普通词」都用它 |
@@ -315,7 +366,9 @@ flowchart TD
 |---|---|
 | 整体更傻或更正常 | `TARGET_RARITY`（第 3 部分），或运行时加 `--rarity` |
 | 加一个梗 | `data/memes.json`，比如 `"off": "关"` |
-| 让 AI 挑最好笑的版本 | 加 `--check`；换模型设环境变量 `SBTRANSLATOR_MODEL`；版本数是 check.py 里的 `VARIANTS` |
+| 加蠢词、梗名、缩写 | `data/stupid_words.json`（默认傻瓜模式） |
+| 加选手外号或短语 | `data/nicknames.json`、`data/phrases.json`，或 `py listen.py --review` 确认弹幕里的候选 |
+| 让 AI 造句或挑版本 | 加 `--check`；换模型设环境变量 `SBTRANSLATOR_MODEL`；版本数是 check.py 里的 `VARIANTS` |
 | 从直播间学梗 | 直播时运行 `py listen.py douyu 6657`，学到的越积越多 |
 | 让爬虫学新的页面 | `data/meme_seeds.txt` 加一行，然后运行 `py learn.py` |
 | 单字换成完整的词（次 → 次数） | `STANDALONE_FORMS`（第 3 部分） |

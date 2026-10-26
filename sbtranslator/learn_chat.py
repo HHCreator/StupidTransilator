@@ -3,6 +3,7 @@
     py listen.py douyu 6657                 # listen to Douyu room 6657 for 10 minutes, then learn
     py listen.py twitch xqc --minutes 30    # same for twitch.tv/xqc
     py listen.py douyu 6657 --minutes 0     # learn again from what was already recorded
+    py listen.py --review                   # approve phrase candidates (see phrases.py)
 
 How it works:
 
@@ -29,7 +30,7 @@ import os
 import re
 import sys
 
-from . import chat
+from . import chat, phrases
 from .translator import CACHE_FILE, WORDS_FILE, _get_json
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -160,10 +161,13 @@ def save(meanings, memes):
 # -- command line -------------------------------------------------------------------------
 
 def main():
-    """py listen.py douyu|twitch ROOM [--minutes N] [--people N]"""
+    """py listen.py douyu|twitch ROOM [--minutes N] [--people N], or py listen.py --review"""
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
     args = sys.argv[1:]
+    if args == ["--review"]:
+        phrases.review()  # approve or reject the phrase candidates found so far
+        return
     minutes, people = 10.0, MIN_PEOPLE
     if "--minutes" in args:
         i = args.index("--minutes")
@@ -191,14 +195,21 @@ def main():
     meanings, memes, unknown = learn(chinese, english)
     save(meanings, memes)
 
-    for word, phrases in sorted(meanings.items()):
-        print(f"  {word} -> {' / '.join(phrases)}")
+    for word, chat_memes in sorted(meanings.items()):
+        print(f"  {word} -> {' / '.join(chat_memes)}")
     for word, text in sorted(memes.items()):
         print(f"  {word} -> {text}")
     if unknown:
         print("Google doesn't know these; add the good ones to data/memes.json yourself:")
         print("  " + ", ".join(unknown[:40]))
     print(f"Saved {len(meanings)} stupid meanings and {len(memes)} memes.")
+
+    # Short danmu that read word by word as English make the best stupid phrases
+    new = phrases.make_candidates(chinese)
+    for phrase, info in new.items():
+        print(f"  phrase candidate: {phrase} -> {info['chinese']}")
+    if new:
+        print(f"{len(new)} new phrase candidates. Approve them with: py listen.py --review")
 
 
 if __name__ == "__main__":

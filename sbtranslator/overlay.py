@@ -39,7 +39,8 @@ FG, MUTED, ACCENT, ACCENT_HOVER, ERROR = "#ececf3", "#8b8fa6", "#6f8cff", "#93a8
 
 # Label on the button and a one-line description, for each mode in sbtranslator.MODES
 MODE_INFO = {
-    "stupid": ("Stupid", "Word by word, with wrong-but-real meanings"),
+    "stupid": ("Stupid", "A normal sentence with stupid words injected"),
+    "wordy": ("逐词", "Word by word, with wrong-but-real meanings"),
     "plain": ("Plain", "Word by word, with the usual meanings"),
     "proper": ("Proper", "A normal, correct translation"),
     "classical": ("文言文", "A correct translation in Classical Chinese"),
@@ -152,7 +153,7 @@ class Overlay:
         self.mode_hint = tk.Label(content, bg=BG, fg=MUTED, anchor="w", font=("Segoe UI", 8))
         self.mode_hint.pack(fill="x", pady=(4, 0))
 
-        # Rarity slider, only used by the stupid mode
+        # Rarity slider, only used by the word-by-word stupid mode
         self.rarity_row = tk.Frame(content, bg=BG)
         self.rarity_label = tk.Label(self.rarity_row, bg=BG, fg=FG, width=10, anchor="w",
                                      font=("Segoe UI", 9))
@@ -185,7 +186,7 @@ class Overlay:
         actions.pack(fill="x", pady=8)
         self._button(actions, "Translate", self.translate, accent=True).pack(side="left")
         self._button(actions, "Copy", self.copy).pack(side="left", padx=(6, 0))
-        # AI check, for the word-by-word modes only (needs Ollama with the model downloaded)
+        # AI check, for the stupid and word-by-word modes (needs Ollama with the model downloaded)
         self.check_box = tk.Checkbutton(
             actions, text="AI 校对", variable=self.check, bd=0, cursor="hand2", takefocus=False,
             bg=BG, fg=FG, activebackground=BG, activeforeground=FG, selectcolor=PANEL,
@@ -225,15 +226,15 @@ class Overlay:
         self.root.geometry(f"+{event.x_root - dx}+{event.y_root - dy}")
 
     def _on_mode(self):
-        """A mode button was clicked: show its description, and the slider for stupid mode."""
+        """A mode button was clicked: show its description, and the slider for wordy mode."""
         mode = self.mode.get()
         self.mode_hint.config(text=MODE_INFO.get(mode, ("", ""))[1])
-        if mode == "stupid":
+        if mode == "wordy":  # rarity only matters for the word-by-word stupid mode
             self.rarity_row.pack(fill="x", pady=(6, 0), before=self.input_frame)
         else:
             self.rarity_row.pack_forget()
-        # The AI check only works on the word-by-word modes
-        self.check_box.config(state="normal" if mode in ("stupid", "plain") else "disabled")
+        # The AI check works on the stupid and word-by-word modes
+        self.check_box.config(state="normal" if mode in ("stupid", "wordy", "plain") else "disabled")
 
     def _on_rarity(self, value=None):
         """The slider moved: show the new rarity next to it."""
@@ -271,7 +272,7 @@ class Overlay:
         # _poll() only shows the answer to the newest request
         self.request += 1
         mode, rarity = self.mode.get(), round(self.rarity.get(), 1)
-        check = self.check.get() and mode in ("stupid", "plain")
+        check = self.check.get() and mode in ("stupid", "wordy", "plain")
         self._set_status("Translating and checking…" if check else "Translating…")
         threading.Thread(target=self._work, args=(self.request, text, mode, rarity, check),
                          daemon=True).start()

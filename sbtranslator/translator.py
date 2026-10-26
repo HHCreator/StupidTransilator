@@ -5,8 +5,9 @@ with no context. Some words keep their natural meaning so the sentence still flo
 others get a far-off meaning; TARGET_RARITY (or --rarity) sets the average.
 
 Usage:
-    py translator.py "Hello world"            # stupid: word by word, wrong-but-real meanings
-    py translator.py --rarity 2.5 "Hello"     # same, rarer on average (0 = natural, 3 = obscure)
+    py translator.py "Hello world"            # stupid: normal translation, stupid words injected
+    py translator.py --wordy "Hello world"    # stupid word by word, wrong-but-real meanings
+    py translator.py --wordy --rarity 2.5 "Hi"  # same, rarer on average (0 = natural, 3 = obscure)
     py translator.py --plain "Hello world"    # word by word, usual meanings
     py translator.py --proper "Hello world"   # normal whole-sentence translation
     py translator.py --classical "Hello"      # correct translation in Classical Chinese (文言文)
@@ -897,7 +898,7 @@ def translate_word_by_word(text, source="en", target="zh-CN", timeout=10, rare=T
 
 
 # =========================================================================================
-# 12. Command line: py translator.py [--plain | --proper | --classical] [--rarity N] [text]
+# 12. Command line: py translator.py [--wordy | --plain | --proper | --classical] [text]
 # =========================================================================================
 
 def main():
@@ -908,31 +909,22 @@ def main():
 
     # Read the options; whatever is left is the text to translate
     args = sys.argv[1:]
-    proper = "--proper" in args
-    plain = "--plain" in args
     target_rarity = TARGET_RARITY
     if "--rarity" in args:
         i = args.index("--rarity")
         target_rarity = float(args[i + 1])
         del args[i:i + 2]
-    classical = "--classical" in args
+    flags = {"--wordy": "wordy", "--plain": "plain", "--proper": "proper",
+             "--classical": "classical"}
+    mode = next((m for flag, m in flags.items() if flag in args), "stupid")
     check = "--check" in args
-    args = [a for a in args if a not in ("--proper", "--plain", "--classical", "--check")]
-    # convert is the function for the chosen mode: it takes English and returns Chinese
-    if classical:
-        convert, mode = translate_classical, "Classical Chinese"
-    elif proper:
-        convert, mode = translate, "proper"
-    elif plain:
-        convert, mode = (lambda text: translate_word_by_word(text, rare=False)), "word by word"
-    else:
-        convert = lambda text: translate_word_by_word(text, target_rarity=target_rarity)
-        mode = f"stupid: word by word, rarity {target_rarity}"
-    if check and (plain or not (classical or proper)):
-        # A local AI model picks and smooths the result (check.py, needs Ollama running)
-        from .check import MODEL, checked_translation
-        convert = lambda text: checked_translation(text, rarity=target_rarity, rare=not plain)
-        mode += f", checked by {MODEL}"
+    args = [a for a in args if a not in flags and a != "--check"]
+    # Every mode goes through the package's translate(), which knows which code does what
+    from . import translate as translate_mode
+    convert = lambda text: translate_mode(text, mode=mode, rarity=target_rarity, check=check)
+    label = mode + (f", rarity {target_rarity}" if mode == "wordy" else "")
+    if check:
+        label += ", checked by the local AI model"
 
     # Text on the command line: translate it once and stop
     if args:
@@ -940,7 +932,7 @@ def main():
         return
 
     # No text: interactive mode, one line at a time until a blank line or Ctrl+C
-    print(f"English -> Chinese ({mode}). Enter a blank line to quit.")
+    print(f"English -> Chinese ({label}). Enter a blank line to quit.")
     while True:
         try:
             text = input("EN> ").strip()

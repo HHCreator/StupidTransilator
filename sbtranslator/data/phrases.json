@@ -1,0 +1,6 @@
+{
+ "_comment": "Approved stupid phrases: {english phrase: chinese}. Filled by py listen.py --review from danmu phrase candidates; you can also add your own. The stupid mode matches the longest phrase first.",
+ "device play": "设备玩耍",
+ "life game": "生命游戏",
+ "zywoo play": "载物玩耍"
+}
