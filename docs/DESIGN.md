@@ -22,7 +22,7 @@ SBtranslator/
 ├── learn.py           根目录的入口：py learn.py
 ├── overlay.py         根目录的入口：py overlay.py，也是 exe 的入口
 ├── listen.py          根目录的入口：py listen.py douyu 6657
-├── build_exe.py       用 PyInstaller 打包成 dist/SBtranslator.exe
+├── build_exe.py       用 PyInstaller 打包成 dist/SBtranslator-windows.zip
 ├── pyproject.toml     pip 安装配置，定义 sbtranslator 等 4 个命令
 ├── docs/DESIGN.md     这份文档
 └── sbtranslator/      真正的代码（一个 Python 包）
@@ -329,7 +329,7 @@ flowchart TD
 | `sbtranslator/check.py` | 本地模型（`--check`）。默认傻瓜模式里由它造句（见第 4 节）；wordy 和 plain 模式里是校对。傻瓜模式一次生成 4 个版本（共用同一批查询，不多花请求），交给本机 Ollama 里的 DeepSeek-R1 14b，让它挑最好笑、但还读得通的一个，只准增删「的、了、在」这类虚词。程序会核对：去掉虚词和标点后，句子必须和它挑的那个一模一样，否则就不用它的修改 |
 | `sbtranslator/server.py` | HTTP 接口。Python 自带的 `ThreadingHTTPServer` 每来一个请求就开一个线程，交给 `Handler`；`Handler` 只负责把请求转成 `translate()` 调用，再把结果写成 JSON |
 | `sbtranslator/overlay.py` | 悬浮窗。tkinter 只允许主线程碰窗口，所以翻译在工作线程里做，热键在热键线程里等；两者都把结果放进队列 `events`，主线程每 50 毫秒用 `_poll()` 取出来显示 |
-| `build_exe.py` | 用 PyInstaller 把 Python、代码和 data 文件夹打成一个 exe |
+| `build_exe.py` | 用 PyInstaller 把 Python、代码和 data 打成一个文件夹再压缩成 zip（不用单文件 exe，因为它容易被杀毒软件误报）|
 
 ## 6. 数据文件
 
