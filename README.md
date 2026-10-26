@@ -71,7 +71,7 @@ a word is seen this takes about 10 requests; results are cached in `sbtranslator
 
 ## Overlay window (standalone exe)
 
-**Download: [SBtranslator.exe](https://github.com/HHCreator/StupidTransilator/raw/standalone/dist/SBtranslator.exe)** (Windows, no install, no Python needed). Windows may warn about an unknown publisher because the exe is not code signed; choose More info > Run anyway.
+**Download: [SBtranslator-windows.zip](https://github.com/HHCreator/StupidTransilator/releases/latest/download/SBtranslator-windows.zip)** (Windows, no install, no Python needed). Unzip it and run `SBtranslator.exe` inside the `SBtranslator` folder (keep the `_internal` folder next to it). The exe is not code signed, so Windows may warn about an unknown publisher; choose More info > Run anyway. GitHub builds it from this branch on every change, see the [Build exe workflow](.github/workflows/build-exe.yml).
 
 A small always-on-top window to translate while you are in another app or a game:
 type an English sentence, press Enter, and the Chinese shows below. Pick the mode with the
@@ -80,11 +80,13 @@ buttons at the top (Stupid, Plain, Proper, 文言文); in Stupid mode a slider s
 ```
 py overlay.py                 # run it from source, no extra packages
 py -m pip install pyinstaller
-py build_exe.py               # builds dist/SBtranslator.exe
+py build_exe.py               # builds dist/SBtranslator-windows.zip
 ```
 
-`dist/SBtranslator.exe` is a single file with Python and the data inside, so it runs on a PC
-without Python (it still needs an internet connection). Controls:
+The zip holds a folder with `SBtranslator.exe`, Python and the data, so it runs on a PC without
+Python (it still needs an internet connection). It is a folder and not a single exe on purpose:
+a single-file PyInstaller exe unpacks itself to a temp folder when it starts, and antivirus
+programs often flag that as a virus. Controls:
 
 - Enter translates, Shift+Enter adds a new line, Copy puts the result on the clipboard
 - Drag the title bar to move it, ✕ to quit

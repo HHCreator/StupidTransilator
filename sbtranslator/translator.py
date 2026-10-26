@@ -299,8 +299,8 @@ STANDALONE_FORMS = {
 # Chinese -> English -> Chinese, and keep Chinese words whose default English translation
 # is the original word (cry -> 哭 -> shout -> 叫声 -> "cry"). Each word costs about 10
 # requests, so it only runs for the ROUND_TRIP_TOP_WORDS most common words in
-# data/words/common_english.txt, and results are cached in .cache/round_trip.json (in the
-# packaged exe the folder next to the code is temporary, so it goes to %LOCALAPPDATA%).
+# data/words/common_english.txt, and results are cached in .cache/round_trip.json (for the
+# packaged exe it goes to %LOCALAPPDATA%, so it survives downloading a new version).
 ROUND_TRIP_TOP_WORDS = 3000
 ROUND_TRIP_RARITY = 1.5  # the rarity given to every meaning the round trip finds
 ROUND_TRIP_BACK_WORDS = 12  # how many English back-translations to follow for each word
