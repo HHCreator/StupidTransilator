@@ -10,6 +10,7 @@ Usage:
     py translator.py --plain "Hello world"    # word by word, usual meanings
     py translator.py --proper "Hello world"   # normal whole-sentence translation
     py translator.py --classical "Hello"      # correct translation in Classical Chinese (文言文)
+    py translator.py --check "Hello world"    # stupid, then proofread by a local AI (check.py)
     py translator.py                          # interactive mode, blank line or Ctrl+C to quit
 
 The four modes and the function behind each one:
@@ -766,7 +767,7 @@ def meme_for(word):
 # =========================================================================================
 
 def translate_word_by_word(text, source="en", target="zh-CN", timeout=10, rare=True,
-                           target_rarity=TARGET_RARITY):
+                           target_rarity=TARGET_RARITY, variants=None):
     """Translate each word separately, ignoring the sentence it sits in.
 
     Contractions are expanded and "the" is dropped. Memes and names come first (see
@@ -774,6 +775,10 @@ def translate_word_by_word(text, source="en", target="zh-CN", timeout=10, rare=T
     (see split_compound). Past tense forms that are also words on their own use that
     word's meaning (see IRREGULAR_PAST_FORMS). With rare=True every other word uses a less
     common meaning: some words stay natural and some go far off, averaging TARGET_RARITY.
+
+    With variants=N it returns a list of up to N different stupid versions instead of one
+    string (check.py has a local AI model pick the best). They share every lookup, so N
+    versions cost no more requests than one; only step 7's random draw is repeated.
     """
     # Step 1: words (letters, digits, apostrophes) and single punctuation marks
     tokens = re.findall(r"[A-Za-z0-9']+|[^\sA-Za-z0-9']", text)
@@ -796,7 +801,8 @@ def translate_word_by_word(text, source="en", target="zh-CN", timeout=10, rare=T
     # The words left to translate, each once (dict.fromkeys keeps their order)
     words = list(dict.fromkeys(t for t in tokens if re.match(r"[A-Za-z0-9']", t) and t not in memes))
     if not words:
-        return "".join(memes.get(t, PUNCTUATION.get(t, t)) for t in tokens)
+        result = "".join(memes.get(t, PUNCTUATION.get(t, t)) for t in tokens)
+        return [result] if variants else result
 
     # Step 5: the usual translation of every word, in one request (with a fallback)
     error = None
@@ -829,8 +835,9 @@ def translate_word_by_word(text, source="en", target="zh-CN", timeout=10, rare=T
             The fitting meaning (rarity 0) is the dictionary meaning that appears in the
             proper translation, or else the plain translation. The other meanings come
             from Google's dictionary, the capitalized word, EXTRA_MEANINGS, memes learned
-            from stream chat and the round trip. Anything that is (part of) the fitting meaning or the plain translation
-            is left out, so whatever gets picked really is a different meaning.
+            from stream chat and the round trip. Anything that is (part of) the fitting
+            meaning or the plain translation is left out, so whatever gets picked really is
+            a different meaning.
             """
             # The fitting meaning (rarity 0) plus every other dictionary meaning
             try:
@@ -873,12 +880,20 @@ def translate_word_by_word(text, source="en", target="zh-CN", timeout=10, rare=T
         # Each word needs a few requests, so look the words up 4 at a time
         with ThreadPoolExecutor(max_workers=4) as pool:
             options = dict(zip(rare_words, pool.map(word_options, rare_words)))
-        lookup.update(spread_rarity(options, target_rarity))
+        # One random draw per version asked for (just one without variants)
+        draws = [spread_rarity(options, target_rarity) for _ in range(variants or 1)]
+    else:
+        draws = [{}]
 
     # Step 8: memes go in last so nothing overrides them; then rebuild the sentence with
     # Chinese punctuation (Chinese doesn't put spaces between words)
-    lookup.update(memes)
-    return "".join(lookup.get(t, PUNCTUATION.get(t, t)) for t in tokens)
+    sentences = []
+    for draw in draws:
+        chosen = {**lookup, **draw, **memes}
+        sentence = "".join(chosen.get(t, PUNCTUATION.get(t, t)) for t in tokens)
+        if sentence not in sentences:  # two draws can land on the same sentence
+            sentences.append(sentence)
+    return sentences if variants else sentences[0]
 
 
 # =========================================================================================
@@ -901,7 +916,8 @@ def main():
         target_rarity = float(args[i + 1])
         del args[i:i + 2]
     classical = "--classical" in args
-    args = [a for a in args if a not in ("--proper", "--plain", "--classical")]
+    check = "--check" in args
+    args = [a for a in args if a not in ("--proper", "--plain", "--classical", "--check")]
     # convert is the function for the chosen mode: it takes English and returns Chinese
     if classical:
         convert, mode = translate_classical, "Classical Chinese"
@@ -912,6 +928,11 @@ def main():
     else:
         convert = lambda text: translate_word_by_word(text, target_rarity=target_rarity)
         mode = f"stupid: word by word, rarity {target_rarity}"
+    if check and (plain or not (classical or proper)):
+        # A local AI model picks and smooths the result (check.py, needs Ollama running)
+        from .check import MODEL, checked_translation
+        convert = lambda text: checked_translation(text, rarity=target_rarity, rare=not plain)
+        mode += f", checked by {MODEL}"
 
     # Text on the command line: translate it once and stop
     if args:

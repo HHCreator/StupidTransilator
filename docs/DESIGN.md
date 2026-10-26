@@ -32,6 +32,7 @@ SBtranslator/
     ├── learn_chat.py  从弹幕里找梗
     ├── server.py      HTTP 接口，给其他语言的程序用
     ├── overlay.py     置顶悬浮窗
+    ├── check.py       用本地 AI 模型（DeepSeek，经 Ollama）校对傻瓜翻译
     └── data/          词表、梗词典、简繁转换表
 ```
 
@@ -129,6 +130,15 @@ classDiagram
         +learn(chinese, english) tuple
         +main()
     }
+    class check {
+        <<check.py 本地模型校对>>
+        +MODEL = deepseek-r1:14b
+        +VARIANTS = 4
+        +checked_translation(text, rarity, rare) str
+        +proofread(english, candidates, proper) str
+        -_ask(messages, model, timeout) str
+        -_skeleton(text) str
+    }
     class BaseHTTPRequestHandler {
         <<Python 标准库>>
     }
@@ -170,6 +180,7 @@ classDiagram
         Bing Translator
         Wikipedia API
         斗鱼 / Twitch 弹幕
+        Ollama 本地模型
     }
 
     BaseHTTPRequestHandler <|-- Handler
@@ -178,6 +189,9 @@ classDiagram
     sbtranslator ..> Pipeline : stupid / plain
     sbtranslator ..> GoogleTranslate : proper
     sbtranslator ..> ClassicalChinese : classical
+    sbtranslator ..> check : check=True
+    check ..> Pipeline : 生成 4 个版本
+    check ..> OnlineServices : Ollama
     Pipeline ..> Memes : 第3步 梗词
     Pipeline ..> CompoundWords : 第4步 复合词
     Pipeline ..> GoogleTranslate : 第5步 逐词翻译
@@ -266,6 +280,7 @@ flowchart TD
 | `sbtranslator/learn.py` | 爬虫。对每个维基页面：英文版拿中文链接和重定向（LoL），中文版拿简体标题和开头的「简称TES」，去掉「电子竞技俱乐部」这类后缀。开头如果有「自封」「人称」「绰号」这样的外号（自封刀锋女王），就用外号代替名字。结果存进 `memes_learned.json`，每次请求间隔 0.5 秒 |
 | `sbtranslator/chat.py` | 读直播间弹幕，只读、匿名，从不发言。Twitch 用匿名 IRC；斗鱼用 WebSocket 加斗鱼自己的 STT 格式，WebSocket 是用标准库自己写的，所以不用装别的包 |
 | `sbtranslator/learn_chat.py` | 从弹幕学梗。弹幕存在缓存文件夹里（用户名换成短哈希）。至少 3 个不同的人发过的短弹幕算中文梗，翻成英文后，最后一个有意义的词得到这个梗作为傻瓜意思（恶龙呢 → "Where's the dragon?" → dragon）；英文聊天里不是英文单词的词（LULW）算英文梗，Google 能翻的就变成梗词 |
+| `sbtranslator/check.py` | 本地模型校对（`--check`）。傻瓜模式一次生成 4 个版本（共用同一批查询，不多花请求），交给本机 Ollama 里的 DeepSeek-R1 14b，让它挑最好笑、但还读得通的一个，只准增删「的、了、在」这类虚词。程序会核对：去掉虚词和标点后，句子必须和它挑的那个一模一样，否则就不用它的修改 |
 | `sbtranslator/server.py` | HTTP 接口。Python 自带的 `ThreadingHTTPServer` 每来一个请求就开一个线程，交给 `Handler`；`Handler` 只负责把请求转成 `translate()` 调用，再把结果写成 JSON |
 | `sbtranslator/overlay.py` | 悬浮窗。tkinter 只允许主线程碰窗口，所以翻译在工作线程里做，热键在热键线程里等；两者都把结果放进队列 `events`，主线程每 50 毫秒用 `_poll()` 取出来显示 |
 | `build_exe.py` | 用 PyInstaller 把 Python、代码和 data 文件夹打成一个 exe |
@@ -300,6 +315,7 @@ flowchart TD
 |---|---|
 | 整体更傻或更正常 | `TARGET_RARITY`（第 3 部分），或运行时加 `--rarity` |
 | 加一个梗 | `data/memes.json`，比如 `"off": "关"` |
+| 让 AI 挑最好笑的版本 | 加 `--check`；换模型设环境变量 `SBTRANSLATOR_MODEL`；版本数是 check.py 里的 `VARIANTS` |
 | 从直播间学梗 | 直播时运行 `py listen.py douyu 6657`，学到的越积越多 |
 | 让爬虫学新的页面 | `data/meme_seeds.txt` 加一行，然后运行 `py learn.py` |
 | 单字换成完整的词（次 → 次数） | `STANDALONE_FORMS`（第 3 部分） |

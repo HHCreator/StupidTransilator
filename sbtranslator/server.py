@@ -4,12 +4,13 @@
     python -m sbtranslator.server --port 9000
 
 Requests:
-    GET  /translate?text=Hello%20world&mode=stupid&rarity=0.8
-    POST /translate   with JSON {"text": "Hello world", "mode": "stupid", "rarity": 0.8}
+    GET  /translate?text=Hello%20world&mode=stupid&rarity=0.8&check=1
+    POST /translate   with JSON {"text": "Hello world", "mode": "stupid", "rarity": 0.8, "check": true}
     GET  /modes
 
 Responses are JSON: {"text": ..., "mode": ..., "translation": ...} or {"error": ...}.
 Only "text" is required; mode defaults to "stupid" and rarity to the library default.
+check turns on proofreading by a local AI model (see check.py); it is off by default.
 
 Python's standard http.server does the HTTP work: ThreadingHTTPServer accepts connections
 and runs each request in its own thread, calling the do_GET / do_POST / do_OPTIONS method
@@ -56,7 +57,9 @@ class Handler(BaseHTTPRequestHandler):
         mode = params.get("mode") or "stupid"
         try:
             rarity = float(params.get("rarity", TARGET_RARITY))
-            translation = translate(text, mode=mode, rarity=rarity)
+            # check arrives as true/false in JSON, or as text ("1", "true") in a URL
+            check = str(params.get("check", "")).lower() in ("1", "true", "yes")
+            translation = translate(text, mode=mode, rarity=rarity, check=check)
         except ValueError as error:
             return self._send(400, {"error": str(error)})
         except Exception as error:

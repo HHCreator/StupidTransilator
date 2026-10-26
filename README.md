@@ -113,6 +113,25 @@ Other stupid-mode rules: contractions are expanded first (can't -> can not), "th
 (Chinese has no articles), compound parts keep their natural meaning (firepower -> 火 + 力量),
 and words of 4 letters or fewer are never split (into stays 进入).
 
+## Proofreading with a local AI model
+
+`--check` lets a local AI model proofread the stupid translation. The stupid mode makes 4
+different versions; the model picks the funniest one that still reads like a Chinese sentence
+and may add or remove a few small function words (的, 了, 在 ...) so it reads better. It is not
+allowed to fix the wrong words, and if it changes more than function words, its edit is
+thrown away and the version it picked is used as it was.
+
+```
+py translator.py --check "The cat is sitting on the table"
+py translator.py --plain --check "The cat is sitting on the table"
+```
+
+It needs [Ollama](https://ollama.com) running on this computer with the model downloaded
+(`ollama pull deepseek-r1:14b`, 9 GB; set `SBTRANSLATOR_MODEL` to use another model). Without
+it, `--check` gives the unchecked translation and prints why. From Python use
+`sbtranslator.translate(text, check=True)`, over HTTP add `check=1`, and the overlay has an
+"AI 校对" box.
+
 ## Using it in other apps (add-on)
 
 Install it as a Python package (no extra dependencies):

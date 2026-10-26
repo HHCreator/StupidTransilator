@@ -87,6 +87,7 @@ class Overlay:
         self.request = 0  # id of the latest translation, older ones are dropped
         self.mode = tk.StringVar(value=MODES[0])
         self.rarity = tk.DoubleVar(value=TARGET_RARITY)
+        self.check = tk.BooleanVar(value=False)  # proofread by the local AI model (check.py)
 
         families = set(tkfont.families(root))
         self.cjk_font = next((f for f in CJK_FONTS if f in families), "TkDefaultFont")
@@ -184,6 +185,12 @@ class Overlay:
         actions.pack(fill="x", pady=8)
         self._button(actions, "Translate", self.translate, accent=True).pack(side="left")
         self._button(actions, "Copy", self.copy).pack(side="left", padx=(6, 0))
+        # AI check, for the word-by-word modes only (needs Ollama with the model downloaded)
+        self.check_box = tk.Checkbutton(
+            actions, text="AI 校对", variable=self.check, bd=0, cursor="hand2", takefocus=False,
+            bg=BG, fg=FG, activebackground=BG, activeforeground=FG, selectcolor=PANEL,
+            font=(self.cjk_font, 9))
+        self.check_box.pack(side="left", padx=(10, 0))
         self.status = tk.Label(actions, bg=BG, fg=MUTED, anchor="e", font=("Segoe UI", 8))
         self.status.pack(side="right", fill="x", expand=True)
 
@@ -225,6 +232,8 @@ class Overlay:
             self.rarity_row.pack(fill="x", pady=(6, 0), before=self.input_frame)
         else:
             self.rarity_row.pack_forget()
+        # The AI check only works on the word-by-word modes
+        self.check_box.config(state="normal" if mode in ("stupid", "plain") else "disabled")
 
     def _on_rarity(self, value=None):
         """The slider moved: show the new rarity next to it."""
@@ -262,17 +271,18 @@ class Overlay:
         # _poll() only shows the answer to the newest request
         self.request += 1
         mode, rarity = self.mode.get(), round(self.rarity.get(), 1)
-        self._set_status("Translating…")
-        threading.Thread(target=self._work, args=(self.request, text, mode, rarity),
+        check = self.check.get() and mode in ("stupid", "plain")
+        self._set_status("Translating and checking…" if check else "Translating…")
+        threading.Thread(target=self._work, args=(self.request, text, mode, rarity, check),
                          daemon=True).start()
         return "break"  # don't type the newline into the input
 
-    def _work(self, request, text, mode, rarity):
+    def _work(self, request, text, mode, rarity, check=False):
         """Translate in the worker thread and hand the result to the main thread via events."""
         # Runs in a worker thread: the network calls would freeze the window
         started = time.monotonic()
         try:
-            result = translate(text, mode=mode, rarity=rarity)
+            result = translate(text, mode=mode, rarity=rarity, check=check)
         except Exception as error:
             self.events.put(("error", request, str(error)))
         else:
