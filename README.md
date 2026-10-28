@@ -176,11 +176,18 @@ py translator.py --check "s1mple is the goat, he can clutch any round with a dea
 py translator.py --wordy --check "The cat is sitting on the table"
 ```
 
-It needs [Ollama](https://ollama.com) running on this computer with the model downloaded
+It needs [Ollama](https://ollama.com) on this computer with the model downloaded
 (`ollama pull deepseek-r1:14b`, 9 GB; set `SBTRANSLATOR_MODEL` to use another model). Without
-it, `--check` gives the unchecked translation and prints why. From Python use
-`sbtranslator.translate(text, check=True)`, over HTTP add `check=1`, and the overlay has an
-"AI 校对" box.
+a running Ollama, `--check` gives the unchecked translation and prints why. From Python use
+`sbtranslator.translate(text, check=True)` (`options()` also says whether the model helped:
+`checked` and `check_error`), over HTTP add `check=1`, and the overlay has an "AI 校对" box.
+
+When you tick "AI 校对" and Ollama isn't running (or it stopped later), the overlay asks
+whether to start it. Yes starts it in the background, without a window; it keeps running like
+Ollama's own app does and frees the graphics card a few minutes after the last question. No
+unticks the box. The status shows "AI" when the model helped, and when it couldn't, the window
+says why under the result. The first checked translation takes longer while the model loads.
+Nothing else starts Ollama on its own.
 
 ## Using it in other apps (add-on)
 

@@ -88,6 +88,8 @@ def options(text, mode="stupid", rarity=TARGET_RARITY, check=False, versions=4):
         words        stupid mode only: [{"english", "chosen", "options"}, ...], each stupid
                      word with the other stupid meanings it can switch to (see adjust())
         proper       the normal translation, to pass to adjust()
+        checked      True when the local model was asked (check=True)
+        check_error  why the local model couldn't be asked, or None
 
     The stupid and wordy modes are random, so the versions really differ; plain, proper
     and classical give one version.
@@ -98,17 +100,21 @@ def options(text, mode="stupid", rarity=TARGET_RARITY, check=False, versions=4):
     if mode in ("wordy", "plain"):
         found = translate_word_by_word(text, rare=(mode == "wordy"), target_rarity=rarity,
                                        variants=versions if mode == "wordy" else 1)
+        checked, check_error = False, None
         if check:
             # The local model picks the best version, which goes first
             from .check import CheckUnavailable, proofread
             try:
                 best = proofread(text, found, _translate_proper(text))
                 found = [best] + [f for f in found if f != best]
-            except CheckUnavailable:
-                pass
-        return {"translation": found[0], "versions": found, "words": [], "proper": None}
+                checked = True
+            except CheckUnavailable as error:
+                check_error = str(error)
+        return {"translation": found[0], "versions": found, "words": [], "proper": None,
+                "checked": checked, "check_error": check_error}
     one = translate(text, mode=mode, rarity=rarity, check=check)
-    return {"translation": one, "versions": [one], "words": [], "proper": None}
+    return {"translation": one, "versions": [one], "words": [], "proper": None,
+            "checked": False, "check_error": None}
 
 
 def adjust(text, chosen, proper=None):

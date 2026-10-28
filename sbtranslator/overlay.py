@@ -12,7 +12,8 @@ the window. Anything slow runs in other threads instead, and they never touch th
     main thread      builds the window, reacts to clicks and keys, and every POLL_MS
                      milliseconds runs Overlay._poll(), which reads self.events
     worker thread    one per translation (Overlay._work): calls sbtranslator.translate()
-                     and puts the result or the error in self.events
+                     and puts the result or the error in self.events; others check whether
+                     the local AI model runs, or start it (Overlay._start_ollama)
     hotkey thread    listen_for_hotkey(): waits for Ctrl+Alt+T and puts ("toggle",)
                      in self.events
 
@@ -25,8 +26,10 @@ import threading
 import time
 import tkinter as tk
 from tkinter import font as tkfont
+from tkinter import messagebox
 
 from . import MODES, adjust, options
+from .check import MODEL, NOT_RUNNING, CheckUnavailable, ollama_program, running, start_ollama
 from .translator import TARGET_RARITY
 
 TITLE = "SB Translator"
@@ -89,6 +92,7 @@ class Overlay:
         self.mode = tk.StringVar(value=MODES[0])
         self.rarity = tk.DoubleVar(value=TARGET_RARITY)
         self.check = tk.BooleanVar(value=False)  # proofread by the local AI model (check.py)
+        self.starting = False  # the local model (Ollama) is being started
 
         families = set(tkfont.families(root))
         self.cjk_font = next((f for f in CJK_FONTS if f in families), "TkDefaultFont")
@@ -198,7 +202,7 @@ class Overlay:
         self.check_box = tk.Checkbutton(
             actions, text="AI 校对", variable=self.check, bd=0, cursor="hand2", takefocus=False,
             bg=BG, fg=FG, activebackground=BG, activeforeground=FG, selectcolor=PANEL,
-            font=(self.cjk_font, 9))
+            font=(self.cjk_font, 9), command=self._on_check)
         self.check_box.pack(side="left", padx=(10, 0))
         self.status = tk.Label(actions, bg=BG, fg=MUTED, anchor="e", font=("Segoe UI", 8))
         self.status.pack(side="right", fill="x", expand=True)
@@ -294,6 +298,46 @@ class Overlay:
         else:
             self.root.withdraw()
 
+    # -- the local AI model ---------------------------------------------------------------
+
+    def _on_check(self):
+        """AI 校对 was ticked or unticked; when ticked, check that the local model runs."""
+        if self.check.get() and not self.starting:
+            # A worker thread asks Ollama, then _poll() gets ("ollama", runs)
+            threading.Thread(target=lambda: self.events.put(("ollama", running())),
+                             daemon=True).start()
+
+    def _offer_start(self):
+        """The local model isn't running: ask whether to start it, or untick AI 校对."""
+        if self.starting:
+            return  # it is being started already
+        if not ollama_program():
+            messagebox.showinfo(
+                TITLE, "没找到本地模型 Ollama，AI 校对用不了。\n\n"
+                f"先装 Ollama（https://ollama.com），再下载模型：ollama pull {MODEL}",
+                parent=self.root)
+            self.check.set(False)
+            return
+        if not messagebox.askyesno(
+                TITLE, "本地模型（Ollama）没有在运行，要现在启动它吗？\n\n"
+                "启动后它在后台一直开着，闲置几分钟会自动从显卡卸载模型。选「否」就先关掉 AI 校对。",
+                parent=self.root):
+            self.check.set(False)
+            self._set_status("AI 校对关了")
+            return
+        self.starting = True
+        self._set_status("正在启动本地模型…")
+        threading.Thread(target=self._start_ollama, daemon=True).start()
+
+    def _start_ollama(self):
+        """Worker thread: start Ollama, then put ("ollama started", error or None) in events."""
+        try:
+            start_ollama()
+        except CheckUnavailable as error:
+            self.events.put(("ollama started", str(error)))
+        else:
+            self.events.put(("ollama started", None))
+
     # -- translating ----------------------------------------------------------------------
 
     def translate(self, event=None):
@@ -334,6 +378,11 @@ class Overlay:
         """Show the other versions and the stupid words of the latest translation."""
         self._clear_choices()
         result = self.last
+        if result.get("check_error"):
+            # AI 校对 was on but the local model couldn't be reached: say why, under the result
+            tk.Label(self.choices, text=f"AI 没用上，这是普通结果：{result['check_error']}",
+                     bg=BG, fg=ERROR, anchor="w", justify="left", wraplength=380,
+                     font=(self.cjk_font, 8)).pack(fill="x", pady=(6, 0))
         others = [v for v in result["versions"] if v != result["shown"]]
         if others:
             tk.Label(self.choices, text="其他版本，点一下换上", bg=BG, fg=MUTED, anchor="w",
@@ -404,7 +453,8 @@ class Overlay:
 
         Events: ("toggle",) from the hotkey, ("hotkey", ok) once the hotkey thread starts,
         ("result", request, options dict, mode, seconds), ("adjusted", request, sentence) and
-        ("error", request, message) from workers.
+        ("error", request, message) from workers, ("ollama", runs) and ("ollama started",
+        error or None) about the local model.
         """
         try:
             while True:
@@ -413,6 +463,15 @@ class Overlay:
                     self.toggle()
                 elif kind == "hotkey" and not args[0]:
                     self.hotkey_hint.config(text="")  # the hotkey doesn't work, so don't offer it
+                elif kind == "ollama" and not args[0] and self.check.get():
+                    self._offer_start()  # AI 校对 was ticked, but the local model isn't running
+                elif kind == "ollama started":
+                    self.starting = False
+                    if args[0]:
+                        self.check.set(False)
+                        self._set_status(f"本地模型没启动：{args[0]}", error=True)
+                    else:
+                        self._set_status("本地模型启动好了")
                 elif kind == "adjusted" and args[0] == self.request:
                     self.last["shown"] = args[1]
                     self._show(args[1])
@@ -426,7 +485,10 @@ class Overlay:
                         self.last = result
                         self._show(result["translation"])
                         self._show_choices()
-                        self._set_status(f"{MODE_INFO.get(mode, (mode,))[0]} · {seconds:.1f}s")
+                        ai = " · AI" if result.get("checked") else ""
+                        self._set_status(f"{MODE_INFO.get(mode, (mode,))[0]}{ai} · {seconds:.1f}s")
+                        if result.get("check_error") == NOT_RUNNING and self.check.get():
+                            self._offer_start()  # the local model stopped since AI 校对 was ticked
                     else:
                         self._show(args[1], error=True)
                         self._set_status("Translation failed", error=True)

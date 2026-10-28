@@ -15,17 +15,22 @@ function words (的, 了, 在 ...) so it reads better. It may not fix the wrong 
 the joke. If the model changes more than function words, its edit is thrown away and the
 version it picked is used as it was.
 
-Needs Ollama (https://ollama.com) running on this computer, with the model downloaded:
+Needs Ollama (https://ollama.com) on this computer, with the model downloaded:
 
     ollama pull deepseek-r1:14b
 
-Without it, a checked translation falls back to the first version and warns why.
+Without a running Ollama, a checked translation falls back to the unchecked one and says
+why. Nothing here starts Ollama on its own: the overlay asks the person first, and only
+then calls start_ollama().
 Set SBTRANSLATOR_MODEL to use another Ollama model (for example deepseek-r1:8b).
 """
 
 import json
 import os
 import re
+import shutil
+import subprocess
+import time
 import urllib.error
 import urllib.request
 import warnings
@@ -34,6 +39,9 @@ from .inject import translate_injected
 from .translator import TARGET_RARITY, translate, translate_word_by_word
 
 OLLAMA_URL = "http://127.0.0.1:11434"  # where Ollama listens on this computer
+# Where the Windows installer puts Ollama, for when it isn't on the PATH
+OLLAMA_PLACES = [os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Ollama", "ollama.exe")]
+START_WAIT = 20  # seconds to wait for Ollama to answer after starting it
 MODEL = os.environ.get("SBTRANSLATOR_MODEL", "deepseek-r1:14b")
 VARIANTS = 4  # how many stupid versions the model chooses from
 TIMEOUT = 180  # seconds; the first request also loads the model into the graphics card
@@ -61,6 +69,50 @@ BUILD_ATTEMPTS = 3  # how many times the model may try to use every stupid word
 
 class CheckUnavailable(Exception):
     """The local model can't be reached (Ollama not running, model not downloaded)."""
+
+
+# Why the model can't be asked, in the two cases the overlay offers help with
+NOT_RUNNING = "Ollama isn't running"
+NOT_INSTALLED = "Ollama isn't installed (https://ollama.com)"
+
+
+def ollama_program():
+    """Where the ollama program is, or None when Ollama isn't installed."""
+    return shutil.which("ollama") or next((p for p in OLLAMA_PLACES if os.path.isfile(p)), None)
+
+
+def running():
+    """Whether Ollama answers on OLLAMA_URL."""
+    try:
+        with urllib.request.urlopen(f"{OLLAMA_URL}/api/tags", timeout=2):
+            return True
+    except (urllib.error.URLError, OSError):
+        return False
+
+
+def start_ollama(wait=START_WAIT):
+    """Start Ollama in the background, without a window, and wait until it answers.
+
+    Only call this when the person agreed (the overlay asks first). Ollama keeps running
+    after the translator closes, like Ollama's own tray app does, and frees the graphics
+    card a few minutes after the last question. Raises CheckUnavailable when Ollama isn't
+    installed or doesn't answer within `wait` seconds.
+    """
+    program = ollama_program()
+    if not program:
+        raise CheckUnavailable(NOT_INSTALLED)
+    try:
+        subprocess.Popen([program, "serve"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL,
+                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except OSError as error:
+        raise CheckUnavailable(f"can't start Ollama ({error})")
+    deadline = time.monotonic() + wait
+    while time.monotonic() < deadline:
+        time.sleep(0.5)
+        if running():
+            return
+    raise CheckUnavailable(f"started Ollama, but it didn't answer within {wait} seconds")
 
 
 def _ask(messages, model, timeout):
@@ -91,7 +143,9 @@ def _ask(messages, model, timeout):
                 raise CheckUnavailable(f"model {model} isn't downloaded (ollama pull {model})")
             raise CheckUnavailable(f"Ollama answered {error.code}: {message[:200]}")
         except (urllib.error.URLError, OSError) as error:
-            raise CheckUnavailable(f"can't reach Ollama at {OLLAMA_URL} ({error})")
+            if running():  # it runs, so this was a timeout: the model is slow or stuck
+                raise CheckUnavailable(f"can't reach Ollama at {OLLAMA_URL} ({error})")
+            raise CheckUnavailable(NOT_RUNNING if ollama_program() else NOT_INSTALLED)
     raise CheckUnavailable("Ollama refused the request")
 
 

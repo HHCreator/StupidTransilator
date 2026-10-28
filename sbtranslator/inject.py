@@ -285,16 +285,20 @@ def options(text, versions=VERSIONS, check=False):
         versions     up to `versions` different whole sentences, translation first
         words        [{"english": word, "chosen": stupid Chinese, "options": [...]}, ...]
         proper       the normal translation (pass it to adjust() to save a request)
+        checked      True when the local model was asked (check=True, see check.py)
+        check_error  why the local model couldn't be asked, or None
     """
     details = translate_injected(text, details=True)
     proper, picks = details["proper"], details["words"]
     translation = details["result"]
+    checked, check_error = False, None
     if check and picks:
         from .check import CheckUnavailable, build_injected
         try:
             translation = build_injected(details)
-        except CheckUnavailable:
-            pass  # no local model: keep Google's sentence
+            checked = True
+        except CheckUnavailable as error:
+            check_error = str(error)  # no local model: keep Google's sentence
     with ThreadPoolExecutor(max_workers=4) as pool:
         choices = dict(zip(picks, pool.map(lambda w: word_options(w, picks[w], proper), picks)))
     # Other versions: each one switches some of the words to another of their options
@@ -311,7 +315,8 @@ def options(text, versions=VERSIONS, check=False):
         if sentence not in found:
             found.append(sentence)
     words = [{"english": w, "chosen": picks[w], "options": choices[w]} for w in picks]
-    return {"translation": translation, "versions": found, "words": words, "proper": proper}
+    return {"translation": translation, "versions": found, "words": words, "proper": proper,
+            "checked": checked, "check_error": check_error}
 
 
 def adjust(text, chosen, proper=None):
