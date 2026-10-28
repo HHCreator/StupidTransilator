@@ -90,6 +90,7 @@ programs often flag that as a virus. Controls:
 
 - Enter translates, Shift+Enter adds a new line, Copy puts the result on the clipboard
 - Drag the title bar to move it, ✕ to quit
+- The — button in the title bar minimizes it to the taskbar; click the taskbar button to bring it back
 - Ctrl+Alt+T hides and shows it from any app (if another app already uses that key, the hint
   in the title bar disappears and the hotkey is off)
 

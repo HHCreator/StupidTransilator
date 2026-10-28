@@ -3,8 +3,8 @@
     py overlay.py                 # or: sbtranslator-overlay
 
 Type an English sentence and press Enter (Shift+Enter for a new line); the translation shows
-below. Pick the translation mode with the buttons. Ctrl+Alt+T hides and shows the overlay
-from any app (Windows). Needs an internet connection, like the rest of the package.
+below. Pick the translation mode with the buttons. The — button minimizes it to the taskbar,
+and Ctrl+Alt+T hides and shows it from any app (Windows). Needs an internet connection, like the rest of the package.
 
 How it works: the window is built with tkinter, which only allows the main thread to touch
 the window. Anything slow runs in other threads instead, and they never touch the window:
@@ -131,6 +131,14 @@ class Overlay:
         close.bind("<Button-1>", lambda e: self.root.destroy())
         close.bind("<Enter>", lambda e: close.config(bg=ERROR, fg=BG))
         close.bind("<Leave>", lambda e: close.config(bg=PANEL, fg=MUTED))
+        # Minimize to the taskbar; click the taskbar button to bring it back
+        minimize = tk.Label(bar, text="—", bg=PANEL, fg=MUTED, font=("Segoe UI", 10), padx=12)
+        minimize.pack(side="right", fill="y")
+        minimize.bind("<Button-1>", lambda e: self.minimize())
+        minimize.bind("<Enter>", lambda e: minimize.config(bg=ACCENT, fg=BG))
+        minimize.bind("<Leave>", lambda e: minimize.config(bg=PANEL, fg=MUTED))
+        # Coming back from the taskbar: draw our own title bar again
+        root.bind("<Map>", self._on_restore)
         for widget in (bar, title, self.hotkey_hint):
             widget.bind("<ButtonPress-1>", self._drag_start)
             widget.bind("<B1-Motion>", self._drag_move)
@@ -251,9 +259,28 @@ class Overlay:
         self.output.insert("1.0", text, "error" if error else "")
         self.output.config(state="disabled")
 
+    def minimize(self):
+        """Shrink the window to the taskbar.
+
+        The window has no system title bar (overrideredirect), and such a window can't be
+        minimized and has no taskbar button. So it gets the normal window frame back just
+        while it is minimized; _on_restore() takes it away again.
+        """
+        self.root.overrideredirect(False)
+        self.root.iconify()
+
+    def _on_restore(self, event=None):
+        """The window was brought back from the taskbar: remove the system frame again."""
+        if event is not None and event.widget is not self.root:
+            return  # <Map> also fires for every widget inside the window
+        if self.root.state() == "normal" and not self.root.overrideredirect():
+            self.root.overrideredirect(True)
+            self.root.attributes("-topmost", True)
+            self.input.focus_force()
+
     def toggle(self):
         """Hide the window, or bring it back on top with the cursor in the input box."""
-        if self.root.state() == "withdrawn":
+        if self.root.state() in ("withdrawn", "iconic"):  # hidden, or in the taskbar
             self.root.deiconify()
             self.root.attributes("-topmost", True)
             self.root.lift()
