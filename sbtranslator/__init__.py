@@ -9,6 +9,7 @@
     sbtranslator.translate("Long time no see", mode="classical")               # 文言文
     sbtranslator.translate("Long time no see", mode="wordy", rarity=1.5)       # stupidest
     sbtranslator.translate("Long time no see", check=True)                     # AI-checked
+    sbtranslator.options("A long sentence ...")    # several versions + other meanings per word
 
 Apps written in other languages can run the HTTP server instead: python -m sbtranslator.server
 
@@ -36,7 +37,7 @@ from .translator import (
     translate_word_by_word,
 )
 
-__all__ = ["MODES", "translate"]
+__all__ = ["MODES", "translate", "options", "adjust"]
 __version__ = "0.1.0"
 
 # The modes translate() accepts; the first one is the default
@@ -77,3 +78,43 @@ def translate(text, mode="stupid", rarity=TARGET_RARITY, check=False):
     if mode == "classical":
         return translate_classical(text)
     raise ValueError(f"Unknown mode {mode!r}, expected one of {', '.join(MODES)}")
+
+
+def options(text, mode="stupid", rarity=TARGET_RARITY, check=False, versions=4):
+    """Translate and offer choices, like Google Translate's alternatives. Returns a dict:
+
+        translation  the translation (as translate() would give it)
+        versions     up to `versions` different whole sentences, the translation first
+        words        stupid mode only: [{"english", "chosen", "options"}, ...], each stupid
+                     word with the other stupid meanings it can switch to (see adjust())
+        proper       the normal translation, to pass to adjust()
+
+    The stupid and wordy modes are random, so the versions really differ; plain, proper
+    and classical give one version.
+    """
+    if mode == "stupid":
+        from .inject import options as stupid_options
+        return stupid_options(text, versions=versions, check=check)
+    if mode in ("wordy", "plain"):
+        found = translate_word_by_word(text, rare=(mode == "wordy"), target_rarity=rarity,
+                                       variants=versions if mode == "wordy" else 1)
+        if check:
+            # The local model picks the best version, which goes first
+            from .check import CheckUnavailable, proofread
+            try:
+                best = proofread(text, found, _translate_proper(text))
+                found = [best] + [f for f in found if f != best]
+            except CheckUnavailable:
+                pass
+        return {"translation": found[0], "versions": found, "words": [], "proper": None}
+    one = translate(text, mode=mode, rarity=rarity, check=check)
+    return {"translation": one, "versions": [one], "words": [], "proper": None}
+
+
+def adjust(text, chosen, proper=None):
+    """Rebuild a stupid-mode sentence after a person switched words (see options()).
+
+    chosen is {English word: stupid Chinese, or None to translate that word normally}.
+    """
+    from .inject import adjust as stupid_adjust
+    return stupid_adjust(text, chosen, proper)

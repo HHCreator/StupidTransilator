@@ -75,7 +75,7 @@ a word is seen this takes about 10 requests; results are cached in `sbtranslator
 
 A small always-on-top window to translate while you are in another app or a game:
 type an English sentence, press Enter, and the Chinese shows below. Pick the mode with the
-buttons at the top (Stupid, Plain, Proper, 文言文); in Stupid mode a slider sets the rarity.
+buttons at the top (Stupid, 逐词, Plain, Proper, 文言文); in 逐词 (wordy) mode a slider sets the rarity.
 
 ```
 py overlay.py                 # run it from source, no extra packages
@@ -91,6 +91,7 @@ programs often flag that as a virus. Controls:
 - Enter translates, Shift+Enter adds a new line, Copy puts the result on the clipboard
 - Drag the title bar to move it, ✕ to quit
 - The — button in the title bar minimizes it to the taskbar; click the taskbar button to bring it back
+- After translating, “其他版本” lists other versions of the sentence (click one to use it), and in the stupid mode “点蠢词换个意思” has a button for each stupid word: pick another wrong meaning, or 正常翻译 to translate that word normally, and the sentence is rebuilt
 - Ctrl+Alt+T hides and shows it from any app (if another app already uses that key, the hint
   in the title bar disappears and the hotkey is off)
 
@@ -199,6 +200,7 @@ sbtranslator.translate("Hello world", mode="plain")                    # word by
 sbtranslator.translate("Hello world", mode="proper")                   # correct
 sbtranslator.translate("Long time no see", mode="classical")           # 文言文
 sbtranslator.translate("Long time no see", rarity=1.5)                 # stupider
+sbtranslator.options("A long sentence ...")   # several versions, and other meanings per stupid word
 ```
 
 From any other language (a bot, a browser extension, a game mod), run the local HTTP API:

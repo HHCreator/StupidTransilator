@@ -26,7 +26,7 @@ import time
 import tkinter as tk
 from tkinter import font as tkfont
 
-from . import MODES, translate
+from . import MODES, adjust, options
 from .translator import TARGET_RARITY
 
 TITLE = "SB Translator"
@@ -212,6 +212,12 @@ class Overlay:
         self.output.tag_config("error", foreground=ERROR, font=("Segoe UI", 9))
         self.output.pack(fill="x")
 
+        # More choices after a translation, like Google Translate's alternatives: other
+        # whole versions, and each stupid word to switch to another meaning (_show_choices)
+        self.choices = tk.Frame(content, bg=BG)
+        self.choices.pack(fill="x")
+        self.last = None  # the latest translation's text, normal translation and choices
+
     def _button(self, parent, text, command, accent=False):
         """Make a flat button; accent=True makes it the highlighted main button."""
         bg, fg = (ACCENT, BG) if accent else (PANEL, FG)
@@ -298,6 +304,7 @@ class Overlay:
         # Number each request: if the user translates again before an answer arrives,
         # _poll() only shows the answer to the newest request
         self.request += 1
+        self._clear_choices()
         mode, rarity = self.mode.get(), round(self.rarity.get(), 1)
         check = self.check.get() and mode in ("stupid", "wordy", "plain")
         self._set_status("Translating and checking…" if check else "Translating…")
@@ -310,11 +317,79 @@ class Overlay:
         # Runs in a worker thread: the network calls would freeze the window
         started = time.monotonic()
         try:
-            result = translate(text, mode=mode, rarity=rarity, check=check)
+            result = options(text, mode=mode, rarity=rarity, check=check)
         except Exception as error:
             self.events.put(("error", request, str(error)))
         else:
+            result["text"] = text
             self.events.put(("result", request, result, mode, time.monotonic() - started))
+
+    # -- choosing other versions and words ------------------------------------------------
+
+    def _clear_choices(self):
+        for widget in self.choices.winfo_children():
+            widget.destroy()
+
+    def _show_choices(self):
+        """Show the other versions and the stupid words of the latest translation."""
+        self._clear_choices()
+        result = self.last
+        others = [v for v in result["versions"] if v != result["shown"]]
+        if others:
+            tk.Label(self.choices, text="其他版本，点一下换上", bg=BG, fg=MUTED, anchor="w",
+                     font=(self.cjk_font, 8)).pack(fill="x", pady=(8, 2))
+            for version in others:
+                label = tk.Label(self.choices, text=version, bg=PANEL, fg=FG, anchor="w",
+                                 justify="left", wraplength=380, cursor="hand2",
+                                 font=(self.cjk_font, 10), padx=8, pady=3)
+                label.pack(fill="x", pady=1)
+                label.bind("<Button-1>", lambda e, v=version: self._use_version(v))
+        if result["words"]:
+            tk.Label(self.choices, text="点蠢词换个意思", bg=BG, fg=MUTED, anchor="w",
+                     font=(self.cjk_font, 8)).pack(fill="x", pady=(8, 2))
+            row = None
+            for i, word in enumerate(result["words"]):
+                if i % 3 == 0:  # three words per row
+                    row = tk.Frame(self.choices, bg=BG)
+                    row.pack(fill="x")
+                current = result["chosen"].get(word["english"]) or "正常"
+                button = tk.Menubutton(
+                    row, text=f"{word['english']} → {current} ▾", bg=PANEL, fg=FG,
+                    activebackground=ACCENT, activeforeground=BG, relief="flat", bd=0,
+                    cursor="hand2", font=(self.cjk_font, 9), padx=6, pady=2)
+                menu = tk.Menu(button, tearoff=False, font=(self.cjk_font, 10))
+                for option in word["options"]:
+                    menu.add_command(label=option,
+                                     command=lambda w=word["english"], o=option: self._switch(w, o))
+                menu.add_separator()
+                menu.add_command(label="正常翻译",
+                                 command=lambda w=word["english"]: self._switch(w, None))
+                button.config(menu=menu)
+                button.pack(side="left", padx=(0, 4), pady=2)
+
+    def _use_version(self, version):
+        """Show another whole version instead of the current one."""
+        self.last["shown"] = version
+        self._show(version)
+        self._set_status("换成了另一个版本")
+        self._show_choices()
+
+    def _switch(self, english, option):
+        """Switch one stupid word, then rebuild the sentence in a worker thread."""
+        self.last["chosen"][english] = option
+        self.request += 1
+        self._set_status("重新造句…")
+        threading.Thread(target=self._rebuild, args=(self.request, dict(self.last["chosen"])),
+                         daemon=True).start()
+
+    def _rebuild(self, request, chosen):
+        """Worker thread: the sentence with the switched words, sent back via events."""
+        try:
+            sentence = adjust(self.last["text"], chosen, self.last["proper"])
+        except Exception as error:
+            self.events.put(("error", request, str(error)))
+        else:
+            self.events.put(("adjusted", request, sentence))
 
     def copy(self):
         """Copy the translation to the clipboard."""
@@ -328,7 +403,8 @@ class Overlay:
         """Handle everything other threads put in self.events, then check again in POLL_MS.
 
         Events: ("toggle",) from the hotkey, ("hotkey", ok) once the hotkey thread starts,
-        ("result", request, text, mode, seconds) and ("error", request, message) from workers.
+        ("result", request, options dict, mode, seconds), ("adjusted", request, sentence) and
+        ("error", request, message) from workers.
         """
         try:
             while True:
@@ -337,10 +413,19 @@ class Overlay:
                     self.toggle()
                 elif kind == "hotkey" and not args[0]:
                     self.hotkey_hint.config(text="")  # the hotkey doesn't work, so don't offer it
+                elif kind == "adjusted" and args[0] == self.request:
+                    self.last["shown"] = args[1]
+                    self._show(args[1])
+                    self._show_choices()
+                    self._set_status("换好了")
                 elif kind in ("result", "error") and args[0] == self.request:
                     if kind == "result":
-                        _, text, mode, seconds = args
-                        self._show(text)
+                        _, result, mode, seconds = args
+                        result["shown"] = result["translation"]
+                        result["chosen"] = {w["english"]: w["chosen"] for w in result["words"]}
+                        self.last = result
+                        self._show(result["translation"])
+                        self._show_choices()
                         self._set_status(f"{MODE_INFO.get(mode, (mode,))[0]} · {seconds:.1f}s")
                     else:
                         self._show(args[1], error=True)

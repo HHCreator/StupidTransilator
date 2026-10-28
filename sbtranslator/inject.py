@@ -30,6 +30,7 @@ import json
 import os
 import random
 import re
+from concurrent.futures import ThreadPoolExecutor
 from difflib import SequenceMatcher
 
 from . import translator as t
@@ -165,9 +166,16 @@ def _repair(output, wanted):
     return output
 
 
-def inject(text, wrap=("【", "】")):
-    """Do steps 1 to 3; return (proper, injected English, {English: stupid Chinese})."""
-    proper = t.translate(text)
+def inject(text, wrap=("【", "】"), forced=None, proper=None):
+    """Do steps 1 to 3; return (proper, injected English, {English: stupid Chinese}).
+
+    forced, when given, decides the stupid words instead of the rules: {English word or
+    phrase (lowercase): stupid Chinese}, and a word that isn't in it stays normal. That is
+    how a person picks other options (see options() and adjust()). proper can be passed in
+    to save asking Google for it again.
+    """
+    if proper is None:
+        proper = t.translate(text)
     tokens = re.findall(r"[A-Za-z0-9']+|[^A-Za-z0-9'\s]|\s+", text)
     words = [i for i, tok in enumerate(tokens) if re.match(r"[A-Za-z0-9]", tok)]
     picks, out, i = {}, [], 0
@@ -181,19 +189,22 @@ def inject(text, wrap=("【", "】")):
             for n in range(min(longest, len(words) - position), 1, -1):
                 span = words[position:position + n]
                 key = " ".join(tokens[j].lower() for j in span)
-                if key in known_phrases:
+                if key in known_phrases and (forced is None or forced.get(key)):
                     found = (span[-1], key)
                     break
             if found:
                 end, key = found
-                picks[key] = known_phrases[key]
-                out.append(wrap[0] + known_phrases[key] + wrap[1])
+                picks[key] = forced[key] if forced is not None else known_phrases[key]
+                out.append(wrap[0] + picks[key] + wrap[1])
                 i = end + 1
                 continue
         token = tokens[i]
         if i in words:
             if token.lower() not in picks:
-                stupid = stupid_word(token, proper)
+                if forced is not None:
+                    stupid = forced.get(token.lower())
+                else:
+                    stupid = stupid_word(token, proper)
                 if stupid:
                     picks[token.lower()] = stupid
             if token.lower() in picks:
@@ -205,13 +216,14 @@ def inject(text, wrap=("【", "】")):
     return proper, "".join(out), picks
 
 
-def translate_injected(text, details=False):
+def translate_injected(text, details=False, forced=None, proper=None):
     """The stupid translation of text (see the top of this file).
 
     With details=True, returns a dict with the proper translation, the injected English,
-    the stupid words and the ones missing from the result, for check.py.
+    the stupid words and the ones missing from the result, for check.py. forced and proper
+    are passed on to inject().
     """
-    proper, injected, picks = inject(text)
+    proper, injected, picks = inject(text, forced=forced, proper=proper)
     wanted = list(dict.fromkeys(picks.values()))
     result = _repair(t.translate(injected), wanted) if picks else proper
     missing = [w for w in wanted if w not in result]
@@ -226,3 +238,87 @@ def translate_injected(text, details=False):
         return {"english": text, "proper": proper, "injected": injected, "words": picks,
                 "result": result, "missing": missing}
     return result
+
+
+# -- more options, for people who want to pick --------------------------------------------
+#
+# Like Google Translate's alternatives: after translating, every stupid word can be switched
+# to another stupid meaning (or back to normal), and a few whole different versions are
+# offered. options() makes them; adjust() rebuilds the sentence from a person's choices.
+
+MAX_OPTIONS = 6  # stupid meanings offered per word
+VERSIONS = 4  # whole sentences offered, the first one being the usual translation
+
+
+def word_options(english, chosen, proper):
+    """The stupid meanings one word can switch to: the chosen one first, then others.
+
+    Others are its other plural form (滔搏们 / 一些滔搏) and the dictionary meanings that
+    aren't in the normal translation, so each one really is a wrong meaning.
+    """
+    found = [chosen]
+    if chosen.endswith("们"):
+        found.append("一些" + chosen[:-1])
+    elif chosen.startswith("一些"):
+        found.append(chosen[2:] + "们")
+    if " " in english:
+        return found  # a phrase from stream chat: nothing else to offer
+    try:
+        meanings = sorted(t.dictionary_meanings(english))
+    except Exception:
+        meanings = []  # Google's dictionary didn't answer; keep what we have
+    plain = _plain(english)
+    for rarity, meaning in meanings:
+        alone = t.STANDALONE_FORMS.get(meaning, meaning)
+        if (rarity <= t.MAX_RARITY and alone and alone not in proper and alone != plain
+                and alone not in found):
+            found.append(alone)
+        if len(found) >= MAX_OPTIONS:
+            break
+    return found
+
+
+def options(text, versions=VERSIONS, check=False):
+    """Translate text and offer choices. Returns a dict:
+
+        translation  the stupid translation (written by the local model with check=True)
+        versions     up to `versions` different whole sentences, translation first
+        words        [{"english": word, "chosen": stupid Chinese, "options": [...]}, ...]
+        proper       the normal translation (pass it to adjust() to save a request)
+    """
+    details = translate_injected(text, details=True)
+    proper, picks = details["proper"], details["words"]
+    translation = details["result"]
+    if check and picks:
+        from .check import CheckUnavailable, build_injected
+        try:
+            translation = build_injected(details)
+        except CheckUnavailable:
+            pass  # no local model: keep Google's sentence
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        choices = dict(zip(picks, pool.map(lambda w: word_options(w, picks[w], proper), picks)))
+    # Other versions: each one switches some of the words to another of their options
+    found, tried = [translation], [picks]
+    for attempt in range(versions * 3):
+        if len(found) >= versions:
+            break
+        variant = {w: random.choice(o[1:]) if len(o) > 1 and random.random() < 0.6 else o[0]
+                   for w, o in choices.items()}
+        if variant in tried:
+            continue
+        tried.append(variant)
+        sentence = translate_injected(text, forced=variant, proper=proper)
+        if sentence not in found:
+            found.append(sentence)
+    words = [{"english": w, "chosen": picks[w], "options": choices[w]} for w in picks]
+    return {"translation": translation, "versions": found, "words": words, "proper": proper}
+
+
+def adjust(text, chosen, proper=None):
+    """Rebuild the stupid sentence from a person's choices.
+
+    chosen is {English word: stupid Chinese, or None to translate that word normally}, as
+    picked from the options() words. Words not in it stay normal too.
+    """
+    forced = {w: zh for w, zh in chosen.items() if zh}
+    return translate_injected(text, forced=forced, proper=proper)
