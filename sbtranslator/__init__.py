@@ -11,6 +11,7 @@
     sbtranslator.translate("Long time no see", check=True)                     # AI-checked
     sbtranslator.translate("frozen你这个major打得跟teses一样", mode="chinese")  # Chinese in
     sbtranslator.options("A long sentence ...")    # several versions + other meanings per word
+    sbtranslator.suggest_mode("今天天气很好", "stupid")  # ("zh", "chinese"): wrong mode
 
 Apps written in other languages can run the HTTP server instead: python -m sbtranslator.server
 
@@ -35,16 +36,19 @@ which function in translator.py does the work for each mode.
 
 from .translator import (
     TARGET_RARITY,
+    clean_text,
+    guess_language,
     translate as _translate_proper,
     translate_classical,
     translate_word_by_word,
 )
 
-__all__ = ["MODES", "translate", "options", "adjust"]
+__all__ = ["MODES", "translate", "options", "adjust", "suggest_mode"]
 __version__ = "0.1.0"
 
 # The modes translate() accepts; the first one is the default
 MODES = ("stupid", "chinese", "wordy", "plain", "proper", "classical")
+ENGLISH_MODES = ("stupid", "wordy", "plain", "proper", "classical")  # the others take Chinese
 
 
 def translate(text, mode="stupid", rarity=TARGET_RARITY, check=False):
@@ -63,6 +67,7 @@ def translate(text, mode="stupid", rarity=TARGET_RARITY, check=False):
     Needs an internet connection. Raises ValueError for an unknown mode and RuntimeError
     when the online translator can't be reached.
     """
+    text = clean_text(text)  # ｌｏｌ -> lol, don’t -> don't
     # Each mode is one function (check.py wraps them when check=True)
     if mode == "stupid":
         if check:
@@ -97,10 +102,22 @@ def options(text, mode="stupid", rarity=TARGET_RARITY, check=False, versions=4):
         proper       the normal translation, to pass to adjust()
         checked      True when the local model was asked (check=True)
         check_error  why the local model couldn't be asked, or None
+        language     what the text is in: "en", "zh", another language's code ("ja"...)
+        suggested_mode
+                     the mode made for that language when it isn't this one, or None
+                     (both from suggest_mode())
 
     The stupid and wordy modes are random, so the versions really differ; plain, proper
     and classical give one version.
     """
+    text = clean_text(text)
+    found = _options(text, mode, rarity, check, versions)
+    found["language"], found["suggested_mode"] = suggest_mode(text, mode)
+    return found
+
+
+def _options(text, mode, rarity, check, versions):
+    """What options() returns, without the language."""
     if mode == "stupid":
         from .inject import options as stupid_options
         return stupid_options(text, versions=versions, check=check)
@@ -134,7 +151,31 @@ def adjust(text, chosen, proper=None):
     Text with Chinese in it is rebuilt the way the "chinese" mode made it (see chinese.py).
     """
     from .chinese import adjust as chinese_adjust, has_chinese
+    text = clean_text(text)  # as options() saw it
     if has_chinese(text):
         return chinese_adjust(text, chosen, proper)
     from .inject import adjust as stupid_adjust
     return stupid_adjust(text, chosen, proper)
+
+
+def suggest_mode(text, mode):
+    """Whether text fits the mode, like Google Translate offering "Translate from: English"
+    when the source language is set to German. Returns (language, suggested_mode):
+
+        language        "en", "zh", Google's code for another language ("ja", "es"...), or
+                        None when there is nothing to tell it by (see guess_language())
+        suggested_mode  "chinese" for Chinese text in a mode made for English, "stupid" for
+                        English text without a word of Chinese in the chinese mode, else None
+
+    Only English and Chinese are translated (the jokes are English-Chinese ones): text in
+    another language gets no suggestion, and is translated as if it were English (Chinese
+    in the chinese mode), which mostly leaves it as it was.
+    """
+    from .chinese import has_chinese
+    text = clean_text(text)
+    language = guess_language(text)
+    if language == "zh" and mode in ENGLISH_MODES:
+        return language, "chinese"
+    if language == "en" and mode == "chinese" and not has_chinese(text):
+        return language, "stupid"
+    return language, None

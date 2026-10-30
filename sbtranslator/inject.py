@@ -109,7 +109,9 @@ def handle_word(token, any_unique=False):
         with open(t.WORDS_FILE, encoding="utf-8") as f:
             common = [line.strip().lower() for _, line in zip(range(HANDLE_SEARCH_WORDS), f)]
         for candidate in common:
-            if len(candidate) >= 4 and t._typo_distance(word, candidate) == 1:
+            # One typo changes the length by one letter at most: skip the others quickly
+            if (len(candidate) >= 4 and abs(len(candidate) - len(word)) <= 1
+                    and t._typo_distance(word, candidate) == 1):
                 return candidate
     return None
 
@@ -230,8 +232,8 @@ def inject(text, wrap=("【", "】"), forced=None, proper=None, use_rules=True):
     """
     if proper is None:
         proper = t.translate(text)
-    tokens = re.findall(r"[A-Za-z0-9']+|[^A-Za-z0-9'\s]|\s+", text)
-    words = [i for i, tok in enumerate(tokens) if re.match(r"[A-Za-z0-9]", tok)]
+    tokens = re.findall(f"[{t.LETTERS}0-9']+|[^{t.LETTERS}0-9'\\s]|\\s+", text)
+    words = [i for i, tok in enumerate(tokens) if re.match(f"[{t.LETTERS}0-9]", tok)]
     # Each choice replaces tokens first..last: {first: (last, key, Chinese, before, after)}
     chosen, by_word = {}, {}
     known_phrases = phrases()

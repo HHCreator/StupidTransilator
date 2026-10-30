@@ -3,7 +3,9 @@
     py overlay.py                 # or: sbtranslator-overlay
 
 Type an English sentence and press Enter (Shift+Enter for a new line); the translation shows
-below. Pick the translation mode with the buttons. The — button minimizes it to the taskbar,
+below. Pick the translation mode with the buttons; Chinese typed in an English mode (or the
+other way round) gets a line under the result offering the right mode, like Google
+Translate's "Translate from". The — button minimizes it to the taskbar,
 and Ctrl+Alt+T hides and shows it from any app (Windows). Needs an internet connection, like the rest of the package.
 
 How it works: the window is built with tkinter, which only allows the main thread to touch
@@ -49,6 +51,11 @@ MODE_INFO = {
     "proper": ("Proper", "A normal, correct translation"),
     "classical": ("文言文", "A correct translation in Classical Chinese"),
 }
+# What to call the language the text is in, when it doesn't fit the mode (suggest_mode())
+LANGUAGE_NAMES = {"en": "英文", "zh": "中文", "ja": "日语", "ko": "韩语", "es": "西班牙语",
+                  "fr": "法语", "de": "德语", "ru": "俄语", "pt": "葡萄牙语", "it": "意大利语",
+                  "vi": "越南语", "th": "泰语", "ar": "阿拉伯语", "id": "印尼语", "tr": "土耳其语",
+                  "pl": "波兰语", "uk": "乌克兰语", "nl": "荷兰语"}
 # Fonts that can show Chinese, in order of preference; the first one installed is used
 CJK_FONTS = ("Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", "SimHei")
 
@@ -379,6 +386,18 @@ class Overlay:
         """Show the other versions and the stupid words of the latest translation."""
         self._clear_choices()
         result = self.last
+        language, suggested = result.get("language"), result.get("suggested_mode")
+        if suggested:
+            # Like Google Translate's "Translate from: English": one click to the right mode
+            hint = tk.Label(self.choices, bg=BG, fg=ACCENT, anchor="w", cursor="hand2",
+                            text=f"看起来是{LANGUAGE_NAMES[language]}，点这里换成"
+                                 f"「{MODE_INFO[suggested][0]}」模式", font=(self.cjk_font, 9))
+            hint.pack(fill="x", pady=(6, 0))
+            hint.bind("<Button-1>", lambda e: self._use_mode(suggested))
+        elif language not in (None, "en", "zh"):
+            tk.Label(self.choices, bg=BG, fg=MUTED, anchor="w", font=(self.cjk_font, 9),
+                     text=f"看起来是{LANGUAGE_NAMES.get(language, '别的语言')}，"
+                          "这个翻译器只翻英文和中文").pack(fill="x", pady=(6, 0))
         if result.get("check_error"):
             # AI 校对 was on but the local model couldn't be reached: say why, under the result
             tk.Label(self.choices, text=f"AI 没用上，这是普通结果：{result['check_error']}",
@@ -416,6 +435,12 @@ class Overlay:
                                  command=lambda w=word["english"]: self._switch(w, None))
                 button.config(menu=menu)
                 button.pack(side="left", padx=(0, 4), pady=2)
+
+    def _use_mode(self, mode):
+        """Switch to the mode the text fits (its language hint was clicked) and translate."""
+        self.mode.set(mode)
+        self._on_mode()
+        self.translate()
 
     def _use_version(self, version):
         """Show another whole version instead of the current one."""
