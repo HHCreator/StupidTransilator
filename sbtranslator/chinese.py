@@ -50,7 +50,8 @@ def in_place(text, forced=None):
 
     forced, when given, decides the stupid words instead of the rules (see inject.inject()).
     """
-    _, sentence, picks = inject.inject(text, wrap=("", ""), forced=forced, proper=text)
+    _, sentence, picks = inject.inject(text, wrap=("", ""), forced=forced, proper=text,
+                                       use_rules=False)
     # English punctuation that ends a part of the sentence: ", " -> "，"
     sentence = re.sub(r"([,:;!?])(?=\s|$|[" + CHINESE + r"])\s*",
                       lambda m: t.PUNCTUATION[m.group(1)], sentence)
@@ -64,7 +65,8 @@ def machine_translated(text, picks):
     """The machine-translated version: to English and back, with picks injected."""
     if not picks:
         return t.translate(to_english(text))
-    return inject.translate_injected(to_english(text), forced=picks, proper=text)
+    return inject.translate_injected(to_english(text), forced=picks, proper=text,
+                                     use_rules=False)
 
 
 def _written_by_model(text, sentence, picks):

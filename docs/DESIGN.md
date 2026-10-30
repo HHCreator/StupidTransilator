@@ -29,6 +29,7 @@ SBtranslator/
     ├── __init__.py    门面：translate(text, mode, rarity)，外部程序只调用它
     ├── translator.py  翻译逻辑和命令行，分 12 个部分
     ├── inject.py      默认的傻瓜模式：正常翻译打底，塞进蠢词
+    ├── rules.py       默认傻瓜模式里不用查表的规则（常用意思、近义词、-ing 当动词读）
     ├── chinese.py     中文输入的傻瓜模式：只把句子里的英文词换成蠢词
     ├── phrases.py     从弹幕做短语表（载物玩耍 → zywoo play）
     ├── learn.py       维基百科爬虫，学梗和人名
@@ -257,9 +258,9 @@ classDiagram
 逐词翻译读起来像乱码，而好笑的机翻梗是「通顺但意思不对」：只有几个词是蠢的，其他都是正常中文。所以默认模式这样做：
 
 1. 先整句正常翻译，知道每个词在这句里的正确意思。
-2. 挑出要变蠢的词，查出它的蠢译法（`stupid_word()`），按这个顺序：弹幕短语表（life game → 生命游戏，最长的优先）、梗名和战队名（frozen → 冰雪奇缘，复数随机变成「滔搏们」或「一些滔搏」）、选手外号（zywoo → 载物）、缩写展开再逐词直译（HLTV → half life tv → 一半生活电视）、选手 ID 读成最近的英文词（m0NESY → money → 钱）、术语的日常意思（major → 主要，只有正常译文里没有这个意思时才换）、复合词、像名人名字的独特词（karrigan → 刀锋女王）。
+2. 挑出要变蠢的词，查出它的蠢译法（`stupid_word()`），按这个顺序：弹幕短语表（life game → 生命游戏，最长的优先）、梗名和战队名（frozen → 冰雪奇缘，复数随机变成「滔搏们」或「一些滔搏」）、选手外号（zywoo → 载物）、缩写展开再逐词直译（HLTV → half life tv → 一半生活电视）、选手 ID 读成最近的英文词（m0NESY → money → 钱）、术语的日常意思（major → 主要，只有正常译文里没有这个意思时才换）、复合词、像名人名字的独特词（karrigan → 刀锋女王）。表里没有的词再走 `rules.py` 的规则，不用查表：词的常用意思（这句用的是别的意思、而且不是近义词时才换：send → 发送，boring → 钻孔）、-ing 词按动词读（let's fucking go → 让我们草着走，he's a fucking beast → 他正在草着一头野兽）、两个词整体翻译和各自意思毫不相干时按字面拼（holy shit → 圣粪便）、少数名词和形容词换成近义词（通过谷歌的英文同义词词典找：home → house → 房子，每个版本用下一个近义词）。表里的词优先于规则。两个蠢词挨着时谷歌容易乱翻，所以规则不换紧挨着蠢词的词。
 3. 把蠢词用【】直接写进英文原句（your 【主要】 champion），整句交给 Google 翻译，Google 会围着这些词把语序和虚词补成正常中文。
-4. 去掉【】，把 Google 改动过的蠢词按字形换回来（滔滔搏们 → 滔搏们）。有词丢了就换「」再试一次。
+4. 去掉【】，把 Google 改动过的蠢词按字形换回来（滔滔搏们 → 滔搏们）。有词丢了就换「」再试一次；还丢就把蠢词放回正常译文里这个词原来的位置（太无聊了 → 太钻孔了），谷歌弄丢的近义词就不换了。最后把脏话换成网上的写法（他妈的 → 踏马，性交 → 草）。
 
 加 `--check` 时，第 3 步改由本地模型造句：要求每个蠢词一字不差地出现，程序检查，不行就再问，最多 3 次，还不行就用 Google 的版本。Google 最常改掉的是动词（clutch 离合器、play 玩耍），本地模型能放进去。
 
@@ -326,7 +327,8 @@ flowchart TD
 | `sbtranslator/chat.py` | 读直播间弹幕，只读、匿名，从不发言。Twitch 用匿名 IRC；斗鱼用 WebSocket 加斗鱼自己的 STT 格式，WebSocket 是用标准库自己写的，所以不用装别的包 |
 | `sbtranslator/learn_chat.py` | 从弹幕学梗。弹幕存在缓存文件夹里（用户名换成短哈希）。至少 3 个不同的人发过的短弹幕算中文梗，翻成英文后，最后一个有意义的词得到这个梗作为傻瓜意思（恶龙呢 → "Where's the dragon?" → dragon）；英文聊天里不是英文单词的词（LULW）算英文梗，Google 能翻的就变成梗词 |
 | `sbtranslator/inject.py` | 默认的傻瓜模式，见第 4 节。表在 `data/stupid_words.json`（战队名和撞名的游戏缩写、缩写展开、术语的日常意思），可以自己加 |
-| `sbtranslator/chinese.py` | 中文输入（`mode="chinese"`）。中文原句不动，只把人打的英文词按 `inject.py` 的规则原地换成蠢词（teses → 滔搏搏，major → 主要），所以语序不会乱。判断「这个意思是不是本来就对」时拿人自己的中文当正常翻译：人特意写了 major 而不是「主要」，所以「主要」算蠢。「其他版本」里还有一个机翻版：先翻成英文，再带着同样的蠢词翻回中文，只有人打的英文词会变蠢，Google 自己写出来的英文词不动 |
+| `sbtranslator/rules.py` | 默认傻瓜模式里不用查表的规则：常用意思、-ing 当动词读、按字面拼、近义词（谷歌英文同义词词典）、脏话写法。找到的近义词存在 `.cache/near_synonyms.json`（exe 存在 `%LOCALAPPDATA%\SBtranslator`），每个词只查一次 |
+| `sbtranslator/chinese.py` | 中文输入（`mode="chinese"`）。中文原句不动，只把人打的英文词按 `inject.py` 的表（不用 `rules.py`）原地换成蠢词（teses → 滔搏搏，major → 主要），所以语序不会乱。判断「这个意思是不是本来就对」时拿人自己的中文当正常翻译：人特意写了 major 而不是「主要」，所以「主要」算蠢。「其他版本」里还有一个机翻版：先翻成英文，再带着同样的蠢词翻回中文，只有人打的英文词会变蠢，Google 自己写出来的英文词不动 |
 | `sbtranslator/phrases.py` | 弹幕短语表。至少 3 个人发过的短弹幕（8 个字以内）切成词，每个词找英文：先查外号表（载物 → zywoo），再看英文意思里有没有选手 ID（设备 → device），都没有就用最常见的意思（生命 → life），拼成 life game → 生命游戏 这样的候选。`py listen.py --review` 逐个确认，确认的进 `phrases.json` |
 | `sbtranslator/check.py` | 本地模型（`--check`）。默认傻瓜模式里由它造句（见第 4 节）；wordy 和 plain 模式里是校对。傻瓜模式一次生成 4 个版本（共用同一批查询，不多花请求），交给本机 Ollama 里的 DeepSeek-R1 14b，让它挑最好笑、但还读得通的一个，只准增删「的、了、在」这类虚词。程序会核对：去掉虚词和标点后，句子必须和它挑的那个一模一样，否则就不用它的修改。连不上 Ollama 就退回普通结果，`options()` 的 `checked` 和 `check_error` 告诉悬浮窗 AI 有没有用上、为什么没用上。这里从不自己启动 Ollama：悬浮窗在勾上「AI 校对」时（或翻译时发现它停了）先问人，同意了才调用 `start_ollama()` 在后台（不开窗口）启动它 |
 | `sbtranslator/server.py` | HTTP 接口。Python 自带的 `ThreadingHTTPServer` 每来一个请求就开一个线程，交给 `Handler`；`Handler` 只负责把请求转成 `translate()` 调用，再把结果写成 JSON |
