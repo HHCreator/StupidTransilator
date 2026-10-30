@@ -108,6 +108,23 @@ def handle_word(token, any_unique=False):
     return None
 
 
+def plural_name(word):
+    """The Chinese name a plural of a name stands for (teses -> 滔搏), or None."""
+    w = word.lower()
+    names, memes = tables()["names"], t._load_memes()
+    for ending in ("es", "s"):
+        base = w[: -len(ending)]
+        if w.endswith(ending) and (base in names or base in memes) and w not in t._all_words:
+            return names.get(base) or memes[base]
+    return None
+
+
+def plural_forms(name):
+    """The ways to say a plural name: 滔搏们, 一些滔搏, and 滔搏搏 (tes = 滔搏, so the second
+    es is another 搏)."""
+    return [name + "们", "一些" + name, name + name[-1]]
+
+
 def stupid_word(token, proper):
     """Return the stupid Chinese for one English word in this sentence, or None to keep it.
 
@@ -123,12 +140,10 @@ def stupid_word(token, proper):
     by_handle = {handle: nickname for nickname, handle in nicknames().items()}
     if w in by_handle:
         return by_handle[w]
-    # Plural of a name: teses -> 滔搏们 or 一些滔搏
-    for ending in ("es", "s"):
-        base = w[: -len(ending)]
-        if w.endswith(ending) and (base in names or base in memes) and w not in t._all_words:
-            name = names.get(base) or memes[base]
-            return random.choice([name + "们", "一些" + name])
+    # Plural of a name: teses -> 滔搏们, 一些滔搏 or 滔搏搏
+    name = plural_name(w)
+    if name:
+        return random.choice(plural_forms(name))
     if w in tables()["acronyms"]:
         return "".join(_plain(part) for part in tables()["acronyms"][w].split())
     handle = handle_word(token)
@@ -253,16 +268,15 @@ VERSIONS = 4  # whole sentences offered, the first one being the usual translati
 def word_options(english, chosen, proper):
     """The stupid meanings one word can switch to: the chosen one first, then others.
 
-    Others are its other plural form (滔搏们 / 一些滔搏) and the dictionary meanings that
-    aren't in the normal translation, so each one really is a wrong meaning.
+    Others are its other plural forms (滔搏们 / 一些滔搏 / 滔搏搏) and the dictionary meanings
+    that aren't in the normal translation, so each one really is a wrong meaning.
     """
     found = [chosen]
-    if chosen.endswith("们"):
-        found.append("一些" + chosen[:-1])
-    elif chosen.startswith("一些"):
-        found.append(chosen[2:] + "们")
     if " " in english:
         return found  # a phrase from stream chat: nothing else to offer
+    name = plural_name(english)
+    if name and chosen in plural_forms(name):
+        return found + [form for form in plural_forms(name) if form != chosen]
     try:
         meanings = sorted(t.dictionary_meanings(english))
     except Exception:

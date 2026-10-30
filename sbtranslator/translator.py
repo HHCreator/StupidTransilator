@@ -12,6 +12,7 @@ Usage:
     py translator.py --proper "Hello world"   # normal whole-sentence translation
     py translator.py --classical "Hello"      # correct translation in Classical Chinese (文言文)
     py translator.py --check "Hello world"    # stupid, then proofread by a local AI (check.py)
+    py translator.py --chinese "frozen你好"    # Chinese in, stupid Chinese out (chinese.py)
     py translator.py                          # interactive mode, blank line or Ctrl+C to quit
 
 The four modes and the function behind each one:
@@ -898,7 +899,7 @@ def translate_word_by_word(text, source="en", target="zh-CN", timeout=10, rare=T
 
 
 # =========================================================================================
-# 12. Command line: py translator.py [--wordy | --plain | --proper | --classical] [text]
+# 12. Command line: py translator.py [--chinese | --wordy | --plain | --proper | --classical] [text]
 # =========================================================================================
 
 def main():
@@ -914,8 +915,8 @@ def main():
         i = args.index("--rarity")
         target_rarity = float(args[i + 1])
         del args[i:i + 2]
-    flags = {"--wordy": "wordy", "--plain": "plain", "--proper": "proper",
-             "--classical": "classical"}
+    flags = {"--chinese": "chinese", "--wordy": "wordy", "--plain": "plain",
+             "--proper": "proper", "--classical": "classical"}
     mode = next((m for flag, m in flags.items() if flag in args), "stupid")
     check = "--check" in args
     args = [a for a in args if a not in flags and a != "--check"]
@@ -932,10 +933,11 @@ def main():
         return
 
     # No text: interactive mode, one line at a time until a blank line or Ctrl+C
-    print(f"English -> Chinese ({label}). Enter a blank line to quit.")
+    source = "Chinese" if mode == "chinese" else "English"
+    print(f"{source} -> Chinese ({label}). Enter a blank line to quit.")
     while True:
         try:
-            text = input("EN> ").strip()
+            text = input(f"{source[:2].upper()}> ").strip()
         except (EOFError, KeyboardInterrupt):
             print()
             break

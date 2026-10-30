@@ -43,6 +43,7 @@ FG, MUTED, ACCENT, ACCENT_HOVER, ERROR = "#ececf3", "#8b8fa6", "#6f8cff", "#93a8
 # Label on the button and a one-line description, for each mode in sbtranslator.MODES
 MODE_INFO = {
     "stupid": ("Stupid", "A normal sentence with stupid words injected"),
+    "chinese": ("中文", "Type Chinese (English names welcome), get the stupid translation"),
     "wordy": ("逐词", "Word by word, with wrong-but-real meanings"),
     "plain": ("Plain", "Word by word, with the usual meanings"),
     "proper": ("Proper", "A normal, correct translation"),
@@ -252,7 +253,7 @@ class Overlay:
         else:
             self.rarity_row.pack_forget()
         # The AI check works on the stupid and word-by-word modes
-        self.check_box.config(state="normal" if mode in ("stupid", "wordy", "plain") else "disabled")
+        self.check_box.config(state="normal" if mode in ("stupid", "chinese", "wordy", "plain") else "disabled")
 
     def _on_rarity(self, value=None):
         """The slider moved: show the new rarity next to it."""
@@ -350,7 +351,7 @@ class Overlay:
         self.request += 1
         self._clear_choices()
         mode, rarity = self.mode.get(), round(self.rarity.get(), 1)
-        check = self.check.get() and mode in ("stupid", "wordy", "plain")
+        check = self.check.get() and mode in ("stupid", "chinese", "wordy", "plain")
         self._set_status("Translating and checking…" if check else "Translating…")
         threading.Thread(target=self._work, args=(self.request, text, mode, rarity, check),
                          daemon=True).start()

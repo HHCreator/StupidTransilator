@@ -9,6 +9,7 @@
     sbtranslator.translate("Long time no see", mode="classical")               # 文言文
     sbtranslator.translate("Long time no see", mode="wordy", rarity=1.5)       # stupidest
     sbtranslator.translate("Long time no see", check=True)                     # AI-checked
+    sbtranslator.translate("frozen你这个major打得跟teses一样", mode="chinese")  # Chinese in
     sbtranslator.options("A long sentence ...")    # several versions + other meanings per word
 
 Apps written in other languages can run the HTTP server instead: python -m sbtranslator.server
@@ -21,6 +22,7 @@ which function in translator.py does the work for each mode.
         __init__.py     translate(text, mode, rarity): the one function apps call
         translator.py   the translation code itself, and the command line
         inject.py       the stupid mode: normal translation with stupid words injected
+        chinese.py      the stupid mode for Chinese input: its English words made stupid
         learn.py        the Wikipedia crawler that learns memes and names
         server.py       the HTTP API for apps in other languages
         overlay.py      the always-on-top window (and the Windows exe)
@@ -41,13 +43,14 @@ __all__ = ["MODES", "translate", "options", "adjust"]
 __version__ = "0.1.0"
 
 # The modes translate() accepts; the first one is the default
-MODES = ("stupid", "wordy", "plain", "proper", "classical")
+MODES = ("stupid", "chinese", "wordy", "plain", "proper", "classical")
 
 
 def translate(text, mode="stupid", rarity=TARGET_RARITY, check=False):
     """Translate English text to Chinese.
 
-    mode: "stupid" (a normal translation with stupid words injected, the default), "wordy"
+    mode: "stupid" (a normal translation with stupid words injected, the default),
+    "chinese" (the text is Chinese with English names mixed in, and those go stupid), "wordy"
     (word by word with wrong-but-real meanings), "plain" (word by word, usual meanings),
     "proper" (correct translation) or "classical" (correct, in Classical Chinese with
     traditional characters).
@@ -66,6 +69,9 @@ def translate(text, mode="stupid", rarity=TARGET_RARITY, check=False):
             return checked_injected(text)
         from .inject import translate_injected
         return translate_injected(text)
+    if mode == "chinese":
+        from .chinese import translate_chinese
+        return translate_chinese(text, check=check)
     if check and mode in ("wordy", "plain"):
         from .check import checked_translation
         return checked_translation(text, rarity=rarity, rare=(mode == "wordy"))
@@ -97,6 +103,9 @@ def options(text, mode="stupid", rarity=TARGET_RARITY, check=False, versions=4):
     if mode == "stupid":
         from .inject import options as stupid_options
         return stupid_options(text, versions=versions, check=check)
+    if mode == "chinese":
+        from .chinese import options as chinese_options
+        return chinese_options(text, versions=versions, check=check)
     if mode in ("wordy", "plain"):
         found = translate_word_by_word(text, rare=(mode == "wordy"), target_rarity=rarity,
                                        variants=versions if mode == "wordy" else 1)
@@ -121,6 +130,10 @@ def adjust(text, chosen, proper=None):
     """Rebuild a stupid-mode sentence after a person switched words (see options()).
 
     chosen is {English word: stupid Chinese, or None to translate that word normally}.
+    Text with Chinese in it is rebuilt the way the "chinese" mode made it (see chinese.py).
     """
+    from .chinese import adjust as chinese_adjust, has_chinese
+    if has_chinese(text):
+        return chinese_adjust(text, chosen, proper)
     from .inject import adjust as stupid_adjust
     return stupid_adjust(text, chosen, proper)

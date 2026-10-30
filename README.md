@@ -7,6 +7,7 @@ Needs Python 3 and an internet connection (it calls Google Translate, and Bing T
 
 ```
 py translator.py "Hello world"            # stupid: a normal sentence with stupid words injected
+py translator.py --chinese "frozen你这个major打得跟teses一样"  # Chinese in, stupid Chinese out
 py translator.py --wordy "Hello world"    # stupid word by word, wrong-but-real meanings
 py translator.py --wordy --rarity 1.5 "Hi"  # same, rarer on average (0 = natural, 3 = obscure, default 0.8)
 py translator.py --plain "Hello world"    # word by word, usual meanings
@@ -75,7 +76,7 @@ a word is seen this takes about 10 requests; results are cached in `sbtranslator
 
 A small always-on-top window to translate while you are in another app or a game:
 type an English sentence, press Enter, and the Chinese shows below. Pick the mode with the
-buttons at the top (Stupid, 逐词, Plain, Proper, 文言文); in 逐词 (wordy) mode a slider sets the rarity.
+buttons at the top (Stupid, 中文, 逐词, Plain, Proper, 文言文); in 逐词 (wordy) mode a slider sets the rarity.
 
 ```
 py overlay.py                 # run it from source, no extra packages
@@ -203,6 +204,7 @@ From Python:
 import sbtranslator
 
 sbtranslator.translate("The butterfly is eating a pineapple.")        # stupid (default)
+sbtranslator.translate("frozen你这个major打得跟teses一样", mode="chinese")  # Chinese in
 sbtranslator.translate("Hello world", mode="plain")                    # word by word
 sbtranslator.translate("Hello world", mode="proper")                   # correct
 sbtranslator.translate("Long time no see", mode="classical")           # 文言文
