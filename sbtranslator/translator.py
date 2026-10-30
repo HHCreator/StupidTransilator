@@ -49,6 +49,7 @@ import random
 import re
 import sys
 import threading
+import unicodedata
 import urllib.parse
 import http.cookiejar
 import urllib.request
@@ -115,6 +116,23 @@ def translate(text, source="en", target="zh-CN", timeout=10):
             return backend(text, source, target, timeout)
         except Exception as exc:
             error = exc  # remember why it failed and try the next endpoint
+    raise RuntimeError(f"Google Translate request failed: {error}")
+
+
+def detect_language(text, timeout=10):
+    """Google's guess at the language text is in: (its code, such as "ja" or "es", and how
+    sure Google is, from 0 to 1). See guess_language(), which asks only when it must."""
+    error = None
+    for url, client in (("https://clients5.google.com/translate_a/single", "dict-chrome-ex"),
+                        ("https://translate.googleapis.com/translate_a/single", "gtx")):
+        try:
+            data = _get_json(url, {"client": client, "sl": "auto", "tl": "en", "dt": "t",
+                                   "q": text}, timeout)
+            # data[2] is the detected language and data[6] Google's confidence in it
+            confidence = data[6] if len(data) > 6 and isinstance(data[6], (int, float)) else 0
+            return data[2] or "", confidence
+        except Exception as exc:
+            error = exc
     raise RuntimeError(f"Google Translate request failed: {error}")
 
 
@@ -463,13 +481,14 @@ def _is_real_word(part, timeout=10):
 
 
 MIN_SPLIT_LETTERS = 4  # words this short or shorter are never split
+MAX_SPLIT_LETTERS = 30  # nor words this long: junk like keyboard mash, which takes long to try
 
 
 def split_compound(word, timeout=10):
     """Split a word into two or more real words (butterfly -> [butter, fly]), or return
     None if it can't be split. Prefers the fewest parts, then the longest shortest part."""
     w = word.lower()
-    if len(w) <= MIN_SPLIT_LETTERS:
+    if len(w) <= MIN_SPLIT_LETTERS or len(w) > MAX_SPLIT_LETTERS:
         return None  # short words like "into" stay whole
     parts_set = set(_load_part_words())
     # _best_split() only knows the word list; if Google's dictionary rejects a part,
@@ -650,6 +669,94 @@ def expand_contraction(token):
     return [token]
 
 
+# Letters of the Latin alphabet, accented ones too, so café, Pokémon and mañana stay one
+# word instead of caf + é. Used in the patterns that split a sentence into words.
+LETTERS = "A-Za-z\u00c0-\u00d6\u00d8-\u00f6\u00f8-\u024f\u1e00-\u1eff"
+
+# Full-width letters and digits, as a Chinese input method types them (ｌｏｌ), become
+# normal ones; full-width punctuation (，！) is Chinese punctuation and stays
+FULL_WIDTH = {code: code - 0xFEE0 for code in range(0xFF01, 0xFF5F) if chr(code - 0xFEE0).isalnum()}
+FULL_WIDTH[0x3000] = ord(" ")  # the full-width space
+# Marks stacked on a letter after Unicode composition (H̷e̵l̴l̸o̶) are decoration, not accents:
+# accented letters (é) are one character by then
+DECORATION = re.compile(f"(?<=[{LETTERS}])[\u0300-\u036f\u0489\u1ab0-\u1aff\u1dc0-\u1dff"
+                        "\u20d0-\u20ff\ufe20-\ufe2f]+")
+
+
+def clean_text(text):
+    """Clean up typed text before translating: ｌｏｌ -> lol, don’t -> don't, H̷e̵l̴l̸o̶ -> Hello."""
+    text = unicodedata.normalize("NFC", text).translate(FULL_WIDTH)
+    text = re.sub(f"(?<=[{LETTERS}])[’‘](?=[{LETTERS}])", "'", text)  # phones type don’t
+    return DECORATION.sub("", text)
+
+
+# Which language typed text is in, so a mode can tell when the text doesn't fit it, like
+# Google Translate offering "Translate from: English" when German was picked (see
+# suggest_mode() in __init__.py). Other languages aren't translated: the jokes are
+# English-Chinese ones, so they lose their taste in Japanese or Spanish.
+# Two letters in a row of another script (kana, hangul, Cyrillic, Arabic, Thai...), or two
+# hiragana anywhere (今日は暑い), mean another language, which Google's language detection
+# names; one such letter is a smiley (¯\_(ツ)_/¯, ಠ_ಠ). Chinese characters mean Chinese when
+# there are at least CHINESE_PER_WORD of them for each English word (frozen你这个major打得跟
+# teses一样). Latin-script text is asked about only when fewer than ENGLISH_SHARE of its words
+# are English words or names, or it has accented letters, and it counts as another language
+# only when Google is at least DETECT_CONFIDENCE sure, because names, chat slang (ropz broky)
+# and keyboard mash look like other languages too.
+OTHER_SCRIPTS = "\u0370-\u1cff\u1f00-\u1fff\u3040-\u30ff\u3130-\u318f\uac00-\ud7af"
+HIRAGANA = "\u3041-\u309f"
+CHINESE_CHARACTERS = "\u4e00-\u9fff"
+ACCENTED = re.compile("[\u00c0-\u00d6\u00d8-\u00f6\u00f8-\u024f\u1e00-\u1eff]")
+CHINESE_PER_WORD = 2
+ENGLISH_SHARE = 0.5
+DETECT_CONFIDENCE = 0.8
+_languages = {}  # {text: language}, so Google is asked about the same text only once
+_known_names = None  # meme and player names, which count as English words here
+
+
+def guess_language(text, timeout=10):
+    """The language text is in: "en", "zh", Google's code for another one ("ja", "es"...),
+    or None when there is nothing to tell it by (emoji, numbers, or Google can't be asked).
+    Chinese and most English text is told without asking Google."""
+    if text in _languages:
+        return _languages[text]
+    words = [w for w in re.findall(f"[{LETTERS}']+", text) if len(w.strip("'")) >= 2]
+    chinese = len(re.findall(f"[{CHINESE_CHARACTERS}]", text))
+    if re.search(f"[{OTHER_SCRIPTS}]{{2}}", text) or len(re.findall(f"[{HIRAGANA}]", text)) >= 2:
+        language = _detected(text, 0, timeout)
+    elif chinese:
+        language = "zh" if chinese >= CHINESE_PER_WORD * len(words) else "en"
+    elif not words:
+        language = None
+    elif ACCENTED.search(text) or sum(map(_is_english_word, words)) < ENGLISH_SHARE * len(words):
+        language = _detected(text, DETECT_CONFIDENCE, timeout) or "en"
+    else:
+        language = "en"
+    if language and language.startswith("zh"):
+        language = "zh" if chinese else "en"  # Google reads pinyin as Chinese
+    _languages[text] = language
+    return language
+
+
+def _detected(text, confidence, timeout):
+    """Google's code for the language of text when it is at least confidence sure, else None."""
+    try:
+        language, sure = detect_language(text, timeout)
+    except RuntimeError:
+        return None  # no guess, but the translation itself goes on
+    return language if language and sure >= confidence else None
+
+
+def _is_english_word(word):
+    """A common English word (contractions too), or a meme or player name (frozen, ropz)."""
+    global _known_names
+    if _known_names is None:
+        from .phrases import players
+        _known_names = set(_load_memes()) | players()
+    base = expand_contraction(word.strip("'"))[0].lower()  # don't -> do
+    base = base[:-2] if base.endswith("'s") else base  # he's -> he
+    return base in _all_words or base in _known_names
+
+
 # =========================================================================================
 # 10. Memes and names: lol -> 英雄联盟, frozen -> 冰雪奇缘, teses -> 滔搏们
 # =========================================================================================
@@ -768,6 +875,17 @@ def meme_for(word):
 #   8. Put the sentence back together
 # =========================================================================================
 
+def _join(pieces):
+    """Put the translated words together without spaces, as Chinese is written, except
+    between two that are still letters or digits (names Google keeps: zywoo ropz)."""
+    sentence = ""
+    for piece in pieces:
+        if re.search(f"[{LETTERS}0-9]$", sentence) and re.match(f"[{LETTERS}0-9]", piece):
+            sentence += " "
+        sentence += piece
+    return sentence
+
+
 def translate_word_by_word(text, source="en", target="zh-CN", timeout=10, rare=True,
                            target_rarity=TARGET_RARITY, variants=None):
     """Translate each word separately, ignoring the sentence it sits in.
@@ -783,12 +901,12 @@ def translate_word_by_word(text, source="en", target="zh-CN", timeout=10, rare=T
     versions cost no more requests than one; only step 7's random draw is repeated.
     """
     # Step 1: words (letters, digits, apostrophes) and single punctuation marks
-    tokens = re.findall(r"[A-Za-z0-9']+|[^\sA-Za-z0-9']", text)
+    tokens = re.findall(f"[{LETTERS}0-9']+|[^\\s{LETTERS}0-9']", text)
     # Step 2: clean-up rules
     tokens = [part for t in tokens for part in expand_contraction(t)]
     tokens = [t for t in tokens if t.lower() not in SKIPPED_WORDS]
     # Step 3: memes and names win over everything else
-    memes = {t: meme_for(t) for t in tokens if re.match(r"[A-Za-z0-9']", t)}
+    memes = {t: meme_for(t) for t in tokens if re.match(f"[{LETTERS}0-9']", t)}
     memes = {t: m for t, m in memes.items() if m}
     # Step 4: split compound words into their parts and translate each part on its own
     split_tokens, compound_parts = [], set()
@@ -801,9 +919,9 @@ def translate_word_by_word(text, source="en", target="zh-CN", timeout=10, rare=T
     # Split parts can be memes too (playoff -> play + off -> 关)
     memes.update({t: _load_memes()[t.lower()] for t in tokens if t.lower() in _load_memes()})
     # The words left to translate, each once (dict.fromkeys keeps their order)
-    words = list(dict.fromkeys(t for t in tokens if re.match(r"[A-Za-z0-9']", t) and t not in memes))
+    words = list(dict.fromkeys(t for t in tokens if re.match(f"[{LETTERS}0-9']", t) and t not in memes))
     if not words:
-        result = "".join(memes.get(t, PUNCTUATION.get(t, t)) for t in tokens)
+        result = _join(memes.get(t, PUNCTUATION.get(t, t)) for t in tokens)
         return [result] if variants else result
 
     # Step 5: the usual translation of every word, in one request (with a fallback)
@@ -892,7 +1010,7 @@ def translate_word_by_word(text, source="en", target="zh-CN", timeout=10, rare=T
     sentences = []
     for draw in draws:
         chosen = {**lookup, **draw, **memes}
-        sentence = "".join(chosen.get(t, PUNCTUATION.get(t, t)) for t in tokens)
+        sentence = _join(chosen.get(t, PUNCTUATION.get(t, t)) for t in tokens)
         if sentence not in sentences:  # two draws can land on the same sentence
             sentences.append(sentence)
     return sentences if variants else sentences[0]

@@ -54,6 +54,8 @@ class Handler(BaseHTTPRequestHandler):
         text = params.get("text")
         if not text:
             return self._send(400, {"error": "Missing 'text'"})
+        if not isinstance(text, str):
+            return self._send(400, {"error": "'text' must be a string"})
         mode = params.get("mode") or "stupid"
         try:
             rarity = float(params.get("rarity", TARGET_RARITY))
