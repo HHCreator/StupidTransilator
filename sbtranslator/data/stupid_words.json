@@ -1,5 +1,5 @@
 {
- "_comment": "Hand-written tables for the stupid mode (inject.py). Keys are lowercase English. names: always replaced (teams, games whose abbreviation is also a word). acronyms: expanded, then each word translated on its own. everyday: the everyday meaning of a word, used only when the sentence means something else. Add your own freely.",
+ "_comment": "Hand-written tables for the stupid mode (inject.py). Keys are lowercase English. names: always replaced (teams, games whose abbreviation is also a word). acronyms: expanded, then each word translated on its own. everyday: the everyday meaning of a word, used only when the sentence means something else. Words not in these tables go through the rules in rules.py; an entry here wins over them, so add one when a rule picks something unfunny. Add your own freely.",
  "names": {
   "navi": "导航",
   "faze": "相位",

@@ -22,6 +22,7 @@ which function in translator.py does the work for each mode.
         __init__.py     translate(text, mode, rarity): the one function apps call
         translator.py   the translation code itself, and the command line
         inject.py       the stupid mode: normal translation with stupid words injected
+        rules.py        its stupid words that need no table (default meanings, near-synonyms)
         chinese.py      the stupid mode for Chinese input: its English words made stupid
         learn.py        the Wikipedia crawler that learns memes and names
         server.py       the HTTP API for apps in other languages

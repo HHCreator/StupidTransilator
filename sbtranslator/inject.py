@@ -17,13 +17,21 @@ that means nothing: only a few words are stupid, everything around them is norma
          compound words                                            butterfly -> 黄油苍蝇
          unique words read as a typo of a famous name              karrigan -> 刀锋女王
          other unique words read as the nearest English word       broky -> broke -> 破产
+       then, for the words the tables leave alone, the rules in rules.py (no tables):
+         the usual meaning, when the sentence means another one    send -> 发送, boring -> 钻孔
+         -ing words read as their verb                             let's fucking go -> 让我们草着走
+         two words read literally                                  holy shit -> 圣粪便
+         a near-synonym for a few nouns and adjectives             home -> house -> 房子
     3. Write the stupid Chinese into the English sentence inside 【】 ("your 【主要】 champion")
        and translate the whole sentence. Google builds fluent Chinese around them.
-    4. Remove the 【】 and put back any injected word Google changed (滔滔搏们 -> 滔搏们).
+    4. Remove the 【】 and put back any injected word Google changed (滔滔搏们 -> 滔搏们). If
+       Google garbled the sentence, swap the stupid words into the normal translation instead.
+       Spell curses the way people type them (他妈的 -> 踏马).
 
 The tables are in data/stupid_words.json (hand-written) and data/phrases.json (approved
-phrases from stream chat, see learn_chat.py). With check=True a local AI model writes the
-sentence instead of Google, with every stupid word required word for word (check.py).
+phrases from stream chat, see learn_chat.py); a table entry wins over the rules. With
+check=True a local AI model writes the sentence instead of Google, with every stupid word
+required word for word (check.py).
 """
 
 import json
@@ -33,6 +41,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 from difflib import SequenceMatcher
 
+from . import rules
 from . import translator as t
 from .phrases import nicknames
 
@@ -45,7 +54,6 @@ LEET = str.maketrans("103457", "ioeast")
 HANDLE_SEARCH_WORDS = 10000  # how many common words a handle is compared with (all of them)
 _tables = None
 _phrases = None
-_word_cache = {}  # plain translations of single English words
 
 
 def _load_json(path):
@@ -76,9 +84,7 @@ def phrases():
 
 def _plain(word):
     """The usual Chinese for one English word, without a trailing 的 (cached)."""
-    if word not in _word_cache:
-        _word_cache[word] = t.translate(word).rstrip("的")
-    return _word_cache[word]
+    return rules.plain(word)
 
 
 def handle_word(token, any_unique=False):
@@ -165,6 +171,37 @@ def stupid_word(token, proper):
     return None
 
 
+# What is still inside 【】 after Google is one of the injected words, maybe changed: it is
+# put back when it shares this much with one (圣穹 -> 圣粪便 shares 0.4)
+REPAIR_SIMILARITY = 0.3
+
+
+def _defects(result, wanted, text, proper):
+    """How bad a stupid sentence is: injected words that went missing, plus English words
+    Google left untranslated that it translates in the normal sentence (患病 ilya)."""
+    def english(s):
+        return {w.lower() for w in re.findall(r"[A-Za-z]{2,}", s)}
+    return sum(w not in result for w in wanted) + len(english(result) & english(text)
+                                                      - english(proper))
+
+
+def _swapped(proper, picks):
+    """The normal translation with each stupid word put where its word's translation is:
+    这个游戏太无聊了 -> 这个游戏太钻孔了. For when Google garbles the injected sentence."""
+    for key, zh in picks.items():
+        name = re.search(r"(?<![A-Za-z])" + re.escape(key) + r"(?![A-Za-z])", proper, re.I)
+        if name:  # a name Google keeps in English: zywoo 的表演 -> 载物 的表演
+            proper = proper[:name.start()] + zh + proper[name.end():]
+            continue
+        for part in key.split():
+            spot = (rules.where(part, proper)
+                    if part not in rules.FUNCTION_WORDS and "'" not in part else None)
+            if spot:
+                proper = proper.replace(spot, zh, 1)
+                break
+    return re.sub(r"(?<=[\u4e00-\u9fff]) +(?=[\u4e00-\u9fff])", "", proper)
+
+
 def _repair(output, wanted):
     """Remove the 【】 and put back injected words Google changed, by closest match."""
     def fix(match):
@@ -172,7 +209,8 @@ def _repair(output, wanted):
         if not wanted:
             return inside
         best = max(wanted, key=lambda w: SequenceMatcher(None, inside, w).ratio())
-        return best if SequenceMatcher(None, inside, best).ratio() >= 0.5 else inside
+        similar = SequenceMatcher(None, inside, best).ratio() >= REPAIR_SIMILARITY
+        return best if similar else inside
     output = re.sub(r"【([^】]*)】", fix, output)
     output = output.replace("【", "").replace("】", "")
     # Google sometimes doubles the first character of a name it doesn't know (滔滔搏们)
@@ -181,21 +219,24 @@ def _repair(output, wanted):
     return output
 
 
-def inject(text, wrap=("【", "】"), forced=None, proper=None):
+def inject(text, wrap=("【", "】"), forced=None, proper=None, use_rules=True):
     """Do steps 1 to 3; return (proper, injected English, {English: stupid Chinese}).
 
     forced, when given, decides the stupid words instead of the rules: {English word or
     phrase (lowercase): stupid Chinese}, and a word that isn't in it stays normal. That is
     how a person picks other options (see options() and adjust()). proper can be passed in
-    to save asking Google for it again.
+    to save asking Google for it again. With use_rules=False only the tables are used, not
+    rules.py.
     """
     if proper is None:
         proper = t.translate(text)
     tokens = re.findall(r"[A-Za-z0-9']+|[^A-Za-z0-9'\s]|\s+", text)
     words = [i for i, tok in enumerate(tokens) if re.match(r"[A-Za-z0-9]", tok)]
-    picks, out, i = {}, [], 0
+    # Each choice replaces tokens first..last: {first: (last, key, Chinese, before, after)}
+    chosen, by_word = {}, {}
     known_phrases = phrases()
     longest = max((len(p.split()) for p in known_phrases), default=0)
+    i = 0
     while i < len(tokens):
         # A phrase from stream chat, longest first: "zywoo play" -> 载物玩耍
         if i in words and longest > 1:
@@ -209,46 +250,90 @@ def inject(text, wrap=("【", "】"), forced=None, proper=None):
                     break
             if found:
                 end, key = found
-                picks[key] = forced[key] if forced is not None else known_phrases[key]
-                out.append(wrap[0] + picks[key] + wrap[1])
+                zh = forced[key] if forced is not None else known_phrases[key]
+                chosen[i] = (end, key, zh, "", "")
                 i = end + 1
                 continue
-        token = tokens[i]
+        # A word from the tables (names, memes, nicknames, acronyms, everyday meanings...)
         if i in words:
-            if token.lower() not in picks:
-                if forced is not None:
-                    stupid = forced.get(token.lower())
-                else:
-                    stupid = stupid_word(token, proper)
-                if stupid:
-                    picks[token.lower()] = stupid
-            if token.lower() in picks:
-                out.append(wrap[0] + picks[token.lower()] + wrap[1])
-                i += 1
-                continue
-        out.append(token)
+            w = tokens[i].lower()
+            if w not in by_word:
+                by_word[w] = (forced.get(w) if forced is not None
+                              else stupid_word(tokens[i], proper))
+            if by_word[w]:
+                chosen[i] = (i, w, by_word[w], "", "")
         i += 1
+    taken = {j for first, (last, *_) in chosen.items() for j in range(first, last + 1)}
+    if use_rules:
+        # The rules (rules.py) for the words the tables left alone
+        for first, (last, key, zh, before, after) in rules.plan(tokens, words, proper,
+                                                                 taken).items():
+            if forced is not None:
+                zh = forced.get(key)  # a person's choice, or normal if they turned it off
+            if zh and not taken & set(range(first, last + 1)):
+                chosen[first] = (last, key, zh, before, after)
+                taken.update(range(first, last + 1))
+        if forced is None:
+            # One near-synonym in a few words; options() offers the others as versions
+            for j, choices in rules.near_synonym_choices(tokens, words, proper, taken).items():
+                chosen[j] = (j, tokens[j].lower(), choices[0], "", "")
+    picks, out, i = {}, [], 0
+    while i < len(tokens):
+        if i in chosen:
+            last, key, zh, before, after = chosen[i]
+            picks[key] = zh
+            out.append(before + wrap[0] + zh + wrap[1] + after)
+            i = last + 1
+        else:
+            out.append(tokens[i])
+            i += 1
     return proper, "".join(out), picks
 
 
-def translate_injected(text, details=False, forced=None, proper=None):
+def translate_injected(text, details=False, forced=None, proper=None, use_rules=True):
     """The stupid translation of text (see the top of this file).
 
     With details=True, returns a dict with the proper translation, the injected English,
-    the stupid words and the ones missing from the result, for check.py. forced and proper
-    are passed on to inject().
+    the stupid words and the ones missing from the result, for check.py. forced, proper and
+    use_rules are passed on to inject().
     """
-    proper, injected, picks = inject(text, forced=forced, proper=proper)
+    proper, injected, picks = inject(text, forced=forced, proper=proper, use_rules=use_rules)
     wanted = list(dict.fromkeys(picks.values()))
     result = _repair(t.translate(injected), wanted) if picks else proper
     missing = [w for w in wanted if w not in result]
     if missing:
         # Google sometimes rewrites an injected word (often a verb); try other brackets once
         retry_injected = injected.replace("【", "「").replace("】", "」")
-        retry = t.translate(retry_injected).replace("「", "").replace("」", "")
+        retry = _repair(t.translate(retry_injected).replace("「", "【").replace("」", "】"), wanted)
         retry_missing = [w for w in wanted if w not in retry]
         if len(retry_missing) < len(missing):
             result, missing = retry, retry_missing
+    if missing and use_rules:
+        # Put a lost word where its English word's translation is: 太无聊了 -> 太钻孔了
+        lost = {key: zh for key, zh in picks.items() if zh in missing}
+        fixed = _swapped(result, lost)
+        if _defects(fixed, wanted, text, proper) < _defects(result, wanted, text, proper):
+            result = fixed
+        missing = [w for w in wanted if w not in result]
+        garbled = {key for key, zh in picks.items()
+                   if zh in missing and zh in rules.chosen_near.get(key, [])}
+        if garbled and forced is None:
+            # Google garbles some near-synonyms (患病伊利亚 -> 脓伊利亚): leave those normal
+            kept = {key: zh for key, zh in picks.items() if key not in garbled}
+            return translate_injected(text, details, kept, proper, use_rules)
+    if use_rules and _defects(result, wanted, text, proper):
+        # Still garbled: the normal sentence with the stupid words swapped in may read better
+        swapped = _swapped(proper, picks)
+        if _defects(swapped, wanted, text, proper) < _defects(result, wanted, text, proper):
+            result = swapped
+            missing = [w for w in wanted if w not in result]
+    if use_rules:
+        # Google puts quotes around words it finds odd (“生病”), and writes curses formally
+        for word in wanted:
+            result = result.replace("“" + word + "”", word)
+        result = rules.spell(result)
+        picks = {key: rules.spell(zh) for key, zh in picks.items()}
+        missing = [rules.spell(w) for w in missing]
     if details:
         return {"english": text, "proper": proper, "injected": injected, "words": picks,
                 "result": result, "missing": missing}
@@ -268,15 +353,17 @@ VERSIONS = 4  # whole sentences offered, the first one being the usual translati
 def word_options(english, chosen, proper):
     """The stupid meanings one word can switch to: the chosen one first, then others.
 
-    Others are its other plural forms (滔搏们 / 一些滔搏 / 滔搏搏) and the dictionary meanings
-    that aren't in the normal translation, so each one really is a wrong meaning.
+    Others are its other plural forms (滔搏们 / 一些滔搏 / 滔搏搏), its other near-synonyms
+    (房子 / 宿舍 / 地址, see rules.py) and the dictionary meanings that aren't in the normal
+    translation, so each one really is a wrong meaning.
     """
     found = [chosen]
     if " " in english:
-        return found  # a phrase from stream chat: nothing else to offer
+        return found  # a phrase from stream chat or a rule for several words
     name = plural_name(english)
     if name and chosen in plural_forms(name):
         return found + [form for form in plural_forms(name) if form != chosen]
+    found += [zh for zh in rules.chosen_near.get(english, []) if zh not in found]
     try:
         meanings = sorted(t.dictionary_meanings(english))
     except Exception:
@@ -315,12 +402,14 @@ def options(text, versions=VERSIONS, check=False):
             check_error = str(error)  # no local model: keep Google's sentence
     with ThreadPoolExecutor(max_workers=4) as pool:
         choices = dict(zip(picks, pool.map(lambda w: word_options(w, picks[w], proper), picks)))
-    # Other versions: each one switches some of the words to another of their options
+    # Other versions: each one switches some of the words to another of their options, and
+    # words with near-synonyms to the next one (sick: 患病, then 不适, 恶心 ...)
     found, tried = [translation], [picks]
     for attempt in range(versions * 3):
         if len(found) >= versions:
             break
-        variant = {w: random.choice(o[1:]) if len(o) > 1 and random.random() < 0.6 else o[0]
+        variant = {w: o[(attempt + 1) % len(o)] if w in rules.chosen_near
+                   else random.choice(o[1:]) if len(o) > 1 and random.random() < 0.6 else o[0]
                    for w, o in choices.items()}
         if variant in tried:
             continue

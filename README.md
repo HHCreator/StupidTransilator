@@ -40,6 +40,22 @@ whole sentence goes to Google, which builds normal Chinese around them. They com
 - compound words (butterfly -> 黄油飞) and unique words read as a typo of a famous name
   (karrigan -> 刀锋女王)
 
+Words the tables don't cover go through rules that need no table (`sbtranslator/rules.py`);
+they use Google's own dictionary and its English thesaurus:
+
+- the usual meaning of a word, when the sentence means another one (and not just a synonym):
+  send them home -> 发送他们..., this game is so boring -> 太钻孔了
+- -ing words read as their verb: let's fucking go -> 让我们草着走,
+  he's a fucking beast -> 他正在草着一头野兽 (in "so fucking good" it stays a curse: 踏马)
+- two words read literally when Google's translation of the pair shares nothing with them:
+  holy shit -> 圣粪便
+- a near-synonym for a few nouns and adjectives Google translated normally, found through
+  English synonyms: home -> house -> 房子, animal -> beast -> 野兽, money -> capital -> 首都.
+  Each version uses the next one, and they are among the word's options
+- curses spelled the way people type them: 他妈的 -> 踏马, 操 -> 草
+
+A table entry wins over the rules, so add one when a rule picks something unfunny.
+
 Google sometimes rewrites an injected word, usually a verb (clutch, play). With `--check` the
 local AI model writes the sentence instead and must use every stupid word word for word; the
 program checks and asks again (see below).
