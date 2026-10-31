@@ -3,8 +3,14 @@
     py overlay.py                 # or: sbtranslator-overlay
 
 Type an English sentence and press Enter (Shift+Enter for a new line); the translation shows
-below. Pick the translation mode with the buttons. Ctrl+Alt+T hides and shows the overlay
-from any app (Windows). Needs an internet connection, like the rest of the package.
+below. Pick the translation mode with the buttons; Chinese typed in an English mode (or the
+other way round) gets a line under the result offering the right mode, like Google
+Translate's "Translate from". The — button minimizes it to the taskbar,
+and Ctrl+Alt+T hides and shows it from any app (Windows). Needs an internet connection, like the rest of the package.
+
+The ⚙ button opens the settings window (settings_window.py): your own word table entries,
+the rarity, importing and exporting settings, and a desktop shortcut. The first time the
+exe starts, a line at the bottom offers to put that shortcut on the desktop (shortcut.py).
 
 How it works: the window is built with tkinter, which only allows the main thread to touch
 the window. Anything slow runs in other threads instead, and they never touch the window:
@@ -12,7 +18,8 @@ the window. Anything slow runs in other threads instead, and they never touch th
     main thread      builds the window, reacts to clicks and keys, and every POLL_MS
                      milliseconds runs Overlay._poll(), which reads self.events
     worker thread    one per translation (Overlay._work): calls sbtranslator.translate()
-                     and puts the result or the error in self.events
+                     and puts the result or the error in self.events; others check whether
+                     the local AI model runs, or start it (Overlay._start_ollama)
     hotkey thread    listen_for_hotkey(): waits for Ctrl+Alt+T and puts ("toggle",)
                      in self.events
 
@@ -20,18 +27,22 @@ self.events is a queue.Queue, which is safe to use from several threads.
 """
 
 import ctypes
+import os
 import queue
+import sys
 import threading
 import time
 import tkinter as tk
 from tkinter import font as tkfont
+from tkinter import messagebox
 
-from . import MODES, translate
-from .translator import TARGET_RARITY
+from . import MODES, adjust, options, settings, shortcut
+from .check import MODEL, NOT_RUNNING, CheckUnavailable, ollama_program, running, start_ollama
 
 TITLE = "SB Translator"
 POLL_MS = 50  # how often the window checks for results, in milliseconds
 ALPHA = 0.96  # window opacity: slightly see-through
+SAVE_DELAY_MS = 600  # the rarity is saved this long after the slider stops moving
 
 # Colours: window border, background, panels (title bar, inputs), text and highlights
 BORDER, BG, PANEL = "#4a4f6a", "#1c1d26", "#2b2d3a"
@@ -40,11 +51,17 @@ FG, MUTED, ACCENT, ACCENT_HOVER, ERROR = "#ececf3", "#8b8fa6", "#6f8cff", "#93a8
 # Label on the button and a one-line description, for each mode in sbtranslator.MODES
 MODE_INFO = {
     "stupid": ("Stupid", "A normal sentence with stupid words injected"),
+    "chinese": ("中文", "Type Chinese (English names welcome), get the stupid translation"),
     "wordy": ("逐词", "Word by word, with wrong-but-real meanings"),
     "plain": ("Plain", "Word by word, with the usual meanings"),
     "proper": ("Proper", "A normal, correct translation"),
     "classical": ("文言文", "A correct translation in Classical Chinese"),
 }
+# What to call the language the text is in, when it doesn't fit the mode (suggest_mode())
+LANGUAGE_NAMES = {"en": "英文", "zh": "中文", "ja": "日语", "ko": "韩语", "es": "西班牙语",
+                  "fr": "法语", "de": "德语", "ru": "俄语", "pt": "葡萄牙语", "it": "意大利语",
+                  "vi": "越南语", "th": "泰语", "ar": "阿拉伯语", "id": "印尼语", "tr": "土耳其语",
+                  "pl": "波兰语", "uk": "乌克兰语", "nl": "荷兰语"}
 # Fonts that can show Chinese, in order of preference; the first one installed is used
 CJK_FONTS = ("Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", "SimHei")
 
@@ -87,8 +104,13 @@ class Overlay:
         self.events = queue.Queue()  # results and hotkey presses coming from other threads
         self.request = 0  # id of the latest translation, older ones are dropped
         self.mode = tk.StringVar(value=MODES[0])
-        self.rarity = tk.DoubleVar(value=TARGET_RARITY)
+        # The rarity set last time (settings.py); the ⚙ window's slider shares this variable
+        self.rarity = tk.DoubleVar(value=settings.rarity())
+        self.rarity.trace_add("write", self._on_rarity)
+        self._save_job = None  # the pending save of the rarity, see _on_rarity()
+        self.settings_window = None  # the ⚙ window while it is open (settings_window.py)
         self.check = tk.BooleanVar(value=False)  # proofread by the local AI model (check.py)
+        self.starting = False  # the local model (Ollama) is being started
 
         families = set(tkfont.families(root))
         self.cjk_font = next((f for f in CJK_FONTS if f in families), "TkDefaultFont")
@@ -103,6 +125,7 @@ class Overlay:
 
         threading.Thread(target=listen_for_hotkey, args=(self.events,), daemon=True).start()
         root.after(POLL_MS, self._poll)
+        root.after(500, self._offer_shortcut)
 
     # -- layout ---------------------------------------------------------------------------
 
@@ -126,11 +149,13 @@ class Overlay:
         self.hotkey_hint = tk.Label(bar, text=f"{HOTKEY_NAME} to hide/show", bg=PANEL, fg=MUTED,
                                     font=("Segoe UI", 8))
         self.hotkey_hint.pack(side="left")
-        close = tk.Label(bar, text="✕", bg=PANEL, fg=MUTED, font=("Segoe UI", 10), padx=12)
-        close.pack(side="right", fill="y")
-        close.bind("<Button-1>", lambda e: self.root.destroy())
-        close.bind("<Enter>", lambda e: close.config(bg=ERROR, fg=BG))
-        close.bind("<Leave>", lambda e: close.config(bg=PANEL, fg=MUTED))
+        # Buttons on the right, from the right: quit, minimize to the taskbar (click the
+        # taskbar button to bring it back), and the ⚙ settings window
+        self._bar_button(bar, "✕", self.root.destroy, hover=ERROR)
+        self._bar_button(bar, "—", self.minimize)
+        self._bar_button(bar, "⚙", self.open_settings, font=("Segoe UI Symbol", 10))
+        # Coming back from the taskbar: draw our own title bar again
+        root.bind("<Map>", self._on_restore)
         for widget in (bar, title, self.hotkey_hint):
             widget.bind("<ButtonPress-1>", self._drag_start)
             widget.bind("<B1-Motion>", self._drag_move)
@@ -160,13 +185,13 @@ class Overlay:
         self.rarity_label.pack(side="left")
         tk.Scale(
             self.rarity_row, variable=self.rarity, from_=0, to=3, resolution=0.1,
-            orient="horizontal", showvalue=False, command=self._on_rarity, bd=0,
+            orient="horizontal", showvalue=False, bd=0,
             highlightthickness=0, sliderrelief="flat", sliderlength=18, width=14,
             bg=ACCENT, activebackground=ACCENT_HOVER, troughcolor=PANEL, length=120,
         ).pack(side="left", fill="x", expand=True)
         tk.Label(self.rarity_row, text="0 natural · 3 obscure", bg=BG, fg=MUTED,
                  font=("Segoe UI", 8)).pack(side="left", padx=(8, 0))
-        self._on_rarity()
+        self._show_rarity()
 
         # Input
         self.input_frame = tk.Frame(content, bg=BG)
@@ -190,7 +215,7 @@ class Overlay:
         self.check_box = tk.Checkbutton(
             actions, text="AI 校对", variable=self.check, bd=0, cursor="hand2", takefocus=False,
             bg=BG, fg=FG, activebackground=BG, activeforeground=FG, selectcolor=PANEL,
-            font=(self.cjk_font, 9))
+            font=(self.cjk_font, 9), command=self._on_check)
         self.check_box.pack(side="left", padx=(10, 0))
         self.status = tk.Label(actions, bg=BG, fg=MUTED, anchor="e", font=("Segoe UI", 8))
         self.status.pack(side="right", fill="x", expand=True)
@@ -204,6 +229,15 @@ class Overlay:
         self.output.tag_config("error", foreground=ERROR, font=("Segoe UI", 9))
         self.output.pack(fill="x")
 
+        # More choices after a translation, like Google Translate's alternatives: other
+        # whole versions, and each stupid word to switch to another meaning (_show_choices)
+        self.choices = tk.Frame(content, bg=BG)
+        self.choices.pack(fill="x")
+        self.last = None  # the latest translation's text, normal translation and choices
+
+        # A question at the bottom, like the desktop shortcut offer (_offer_shortcut)
+        self.notice = tk.Frame(content, bg=BG)
+
     def _button(self, parent, text, command, accent=False):
         """Make a flat button; accent=True makes it the highlighted main button."""
         bg, fg = (ACCENT, BG) if accent else (PANEL, FG)
@@ -213,6 +247,15 @@ class Overlay:
             activeforeground=BG, font=("Segoe UI", 9, "bold" if accent else "normal"),
             padx=14, pady=4,
         )
+
+    def _bar_button(self, bar, text, command, hover=ACCENT, font=("Segoe UI", 10)):
+        """Put a button on the right of the title bar; it lights up under the mouse."""
+        button = tk.Label(bar, text=text, bg=PANEL, fg=MUTED, font=font, padx=12, cursor="hand2")
+        button.pack(side="right", fill="y")
+        button.bind("<Button-1>", lambda e: command())
+        button.bind("<Enter>", lambda e: button.config(bg=hover, fg=BG))
+        button.bind("<Leave>", lambda e: button.config(bg=PANEL, fg=MUTED))
+        return button
 
     # -- events ---------------------------------------------------------------------------
 
@@ -234,11 +277,27 @@ class Overlay:
         else:
             self.rarity_row.pack_forget()
         # The AI check works on the stupid and word-by-word modes
-        self.check_box.config(state="normal" if mode in ("stupid", "wordy", "plain") else "disabled")
+        self.check_box.config(state="normal" if mode in ("stupid", "chinese", "wordy", "plain") else "disabled")
 
-    def _on_rarity(self, value=None):
-        """The slider moved: show the new rarity next to it."""
+    def _show_rarity(self):
         self.rarity_label.config(text=f"Rarity {self.rarity.get():.1f}")
+
+    def _on_rarity(self, *args):
+        """A rarity slider moved (this one or the ⚙ window's): show the new rarity, and save
+        it once the slider has stopped for a moment, so it is there next time."""
+        self._show_rarity()
+        if self.settings_window:
+            self.settings_window.show_rarity()
+        if self._save_job:
+            self.root.after_cancel(self._save_job)
+        self._save_job = self.root.after(SAVE_DELAY_MS, self._save_rarity)
+
+    def _save_rarity(self):
+        self._save_job = None
+        try:
+            settings.set_rarity(self.rarity.get())
+        except OSError as error:
+            self._set_status(f"稀有度没存上：{error}", error=True)
 
     def _set_status(self, text, error=False):
         """Show a short message next to the buttons (red for errors)."""
@@ -251,15 +310,147 @@ class Overlay:
         self.output.insert("1.0", text, "error" if error else "")
         self.output.config(state="disabled")
 
+    def minimize(self):
+        """Shrink the window to the taskbar.
+
+        The window has no system title bar (overrideredirect), and such a window can't be
+        minimized and has no taskbar button. So it gets the normal window frame back just
+        while it is minimized; _on_restore() takes it away again.
+        """
+        self.root.overrideredirect(False)
+        self.root.iconify()
+
+    def _on_restore(self, event=None):
+        """The window was brought back from the taskbar: remove the system frame again."""
+        if event is not None and event.widget is not self.root:
+            return  # <Map> also fires for every widget inside the window
+        if self.root.state() == "normal" and not self.root.overrideredirect():
+            self.root.overrideredirect(True)
+            self.root.attributes("-topmost", True)
+            self.input.focus_force()
+
     def toggle(self):
         """Hide the window, or bring it back on top with the cursor in the input box."""
-        if self.root.state() == "withdrawn":
+        if self.root.state() in ("withdrawn", "iconic"):  # hidden, or in the taskbar
             self.root.deiconify()
             self.root.attributes("-topmost", True)
             self.root.lift()
             self.input.focus_force()
         else:
             self.root.withdraw()
+
+    # -- settings and the desktop shortcut ------------------------------------------------
+
+    def open_settings(self, english=None, chinese=None):
+        """Open the ⚙ window (or bring it to the front). With english, it shows that word
+        ready to save with chinese, as picked in a word's menu."""
+        from .settings_window import SettingsWindow
+        if self.settings_window is None:
+            self.settings_window = SettingsWindow(self)
+        else:
+            self.settings_window.show()
+        if english:
+            self.settings_window.prefill(english, chinese)
+
+    def _offer_shortcut(self):
+        """The exe asks once whether to put a shortcut on the desktop, and a new copy (a
+        new download in another folder) asks whether the old shortcut should open it.
+        settings remembers which exe asked, so each copy asks at most once."""
+        if not (getattr(sys, "frozen", False) and shortcut.available()):
+            return  # from source: the ⚙ window has the button
+        here = os.path.normcase(sys.executable)
+        asked = settings.state("shortcut_asked")
+        if asked and os.path.normcase(asked) == here:
+            return
+        try:
+            where, opens = shortcut.state()
+        except Exception:
+            return  # only an offer: never let it get in the way of translating
+        if where == "here" or (where == "missing" and asked):
+            return  # done, or another copy asked and they didn't want one (or deleted it)
+        if where == "missing":
+            question = "要在桌面放一个快捷方式吗？以后双击它就能打开翻译器。"
+        else:
+            question = ("桌面上的 SBtranslator 快捷方式打开的是别的地方的程序"
+                        f"（{opens or '打不开'}），改成打开现在这个吗？")
+        self._show_notice(question, [("好", self._accept_shortcut), ("不用了", self._decline_shortcut)])
+
+    def _accept_shortcut(self):
+        self.hide_notice()
+        try:
+            shortcut.create()
+            settings.set_state("shortcut_asked", sys.executable)
+        except Exception as error:  # OSError from Windows, or anything else ctypes raises
+            self._set_status(f"快捷方式没建成：{error}", error=True)
+        else:
+            self._set_status("桌面快捷方式放好了")
+
+    def _decline_shortcut(self):
+        self.hide_notice()
+        try:
+            settings.set_state("shortcut_asked", sys.executable)
+        except OSError:
+            pass  # then it asks again next time, nothing worse
+        self._set_status("要的话以后在 ⚙ 里放")
+
+    def _show_notice(self, text, actions):
+        """Show a question at the bottom of the window, with a link for each answer:
+        actions is [(label, function), ...]."""
+        for widget in self.notice.winfo_children():
+            widget.destroy()
+        tk.Label(self.notice, text=text, bg=BG, fg=FG, anchor="w", justify="left",
+                 wraplength=380, font=(self.cjk_font, 9)).pack(fill="x")
+        row = tk.Frame(self.notice, bg=BG)
+        row.pack(fill="x", pady=(4, 0))
+        for label, command in actions:
+            link = tk.Label(row, text=label, bg=PANEL, fg=ACCENT, cursor="hand2",
+                            font=(self.cjk_font, 9), padx=10, pady=2)
+            link.pack(side="left", padx=(0, 6))
+            link.bind("<Button-1>", lambda e, c=command: c())
+        self.notice.pack(fill="x", pady=(10, 0))
+
+    def hide_notice(self):
+        self.notice.pack_forget()
+
+    # -- the local AI model ---------------------------------------------------------------
+
+    def _on_check(self):
+        """AI 校对 was ticked or unticked; when ticked, check that the local model runs."""
+        if self.check.get() and not self.starting:
+            # A worker thread asks Ollama, then _poll() gets ("ollama", runs)
+            threading.Thread(target=lambda: self.events.put(("ollama", running())),
+                             daemon=True).start()
+
+    def _offer_start(self):
+        """The local model isn't running: ask whether to start it, or untick AI 校对."""
+        if self.starting:
+            return  # it is being started already
+        if not ollama_program():
+            messagebox.showinfo(
+                TITLE, "没找到本地模型 Ollama，AI 校对用不了。\n\n"
+                f"先装 Ollama（https://ollama.com），再下载模型：ollama pull {MODEL}",
+                parent=self.root)
+            self.check.set(False)
+            return
+        if not messagebox.askyesno(
+                TITLE, "本地模型（Ollama）没有在运行，要现在启动它吗？\n\n"
+                "启动后它在后台一直开着，闲置几分钟会自动从显卡卸载模型。选「否」就先关掉 AI 校对。",
+                parent=self.root):
+            self.check.set(False)
+            self._set_status("AI 校对关了")
+            return
+        self.starting = True
+        self._set_status("正在启动本地模型…")
+        threading.Thread(target=self._start_ollama, daemon=True).start()
+
+    def _start_ollama(self):
+        """Worker thread: start Ollama, then put ("ollama started", error or None) in events."""
+        try:
+            start_ollama()
+        except CheckUnavailable as error:
+            self.events.put(("ollama started", str(error)))
+        else:
+            self.events.put(("ollama started", None))
 
     # -- translating ----------------------------------------------------------------------
 
@@ -271,8 +462,9 @@ class Overlay:
         # Number each request: if the user translates again before an answer arrives,
         # _poll() only shows the answer to the newest request
         self.request += 1
+        self._clear_choices()
         mode, rarity = self.mode.get(), round(self.rarity.get(), 1)
-        check = self.check.get() and mode in ("stupid", "wordy", "plain")
+        check = self.check.get() and mode in ("stupid", "chinese", "wordy", "plain")
         self._set_status("Translating and checking…" if check else "Translating…")
         threading.Thread(target=self._work, args=(self.request, text, mode, rarity, check),
                          daemon=True).start()
@@ -283,11 +475,106 @@ class Overlay:
         # Runs in a worker thread: the network calls would freeze the window
         started = time.monotonic()
         try:
-            result = translate(text, mode=mode, rarity=rarity, check=check)
+            result = options(text, mode=mode, rarity=rarity, check=check)
         except Exception as error:
             self.events.put(("error", request, str(error)))
         else:
+            result["text"] = text
             self.events.put(("result", request, result, mode, time.monotonic() - started))
+
+    # -- choosing other versions and words ------------------------------------------------
+
+    def _clear_choices(self):
+        for widget in self.choices.winfo_children():
+            widget.destroy()
+
+    def _show_choices(self):
+        """Show the other versions and the stupid words of the latest translation."""
+        self._clear_choices()
+        result = self.last
+        language, suggested = result.get("language"), result.get("suggested_mode")
+        if suggested:
+            # Like Google Translate's "Translate from: English": one click to the right mode
+            hint = tk.Label(self.choices, bg=BG, fg=ACCENT, anchor="w", cursor="hand2",
+                            text=f"看起来是{LANGUAGE_NAMES[language]}，点这里换成"
+                                 f"「{MODE_INFO[suggested][0]}」模式", font=(self.cjk_font, 9))
+            hint.pack(fill="x", pady=(6, 0))
+            hint.bind("<Button-1>", lambda e: self._use_mode(suggested))
+        elif language not in (None, "en", "zh"):
+            tk.Label(self.choices, bg=BG, fg=MUTED, anchor="w", font=(self.cjk_font, 9),
+                     text=f"看起来是{LANGUAGE_NAMES.get(language, '别的语言')}，"
+                          "这个翻译器只翻英文和中文").pack(fill="x", pady=(6, 0))
+        if result.get("check_error"):
+            # AI 校对 was on but the local model couldn't be reached: say why, under the result
+            tk.Label(self.choices, text=f"AI 没用上，这是普通结果：{result['check_error']}",
+                     bg=BG, fg=ERROR, anchor="w", justify="left", wraplength=380,
+                     font=(self.cjk_font, 8)).pack(fill="x", pady=(6, 0))
+        others = [v for v in result["versions"] if v != result["shown"]]
+        if others:
+            tk.Label(self.choices, text="其他版本，点一下换上", bg=BG, fg=MUTED, anchor="w",
+                     font=(self.cjk_font, 8)).pack(fill="x", pady=(8, 2))
+            for version in others:
+                label = tk.Label(self.choices, text=version, bg=PANEL, fg=FG, anchor="w",
+                                 justify="left", wraplength=380, cursor="hand2",
+                                 font=(self.cjk_font, 10), padx=8, pady=3)
+                label.pack(fill="x", pady=1)
+                label.bind("<Button-1>", lambda e, v=version: self._use_version(v))
+        if result["words"]:
+            tk.Label(self.choices, text="点蠢词换个意思", bg=BG, fg=MUTED, anchor="w",
+                     font=(self.cjk_font, 8)).pack(fill="x", pady=(8, 2))
+            row = None
+            for i, word in enumerate(result["words"]):
+                if i % 3 == 0:  # three words per row
+                    row = tk.Frame(self.choices, bg=BG)
+                    row.pack(fill="x")
+                current = result["chosen"].get(word["english"]) or "正常"
+                button = tk.Menubutton(
+                    row, text=f"{word['english']} → {current} ▾", bg=PANEL, fg=FG,
+                    activebackground=ACCENT, activeforeground=BG, relief="flat", bd=0,
+                    cursor="hand2", font=(self.cjk_font, 9), padx=6, pady=2)
+                menu = tk.Menu(button, tearoff=False, font=(self.cjk_font, 10))
+                for option in word["options"]:
+                    menu.add_command(label=option,
+                                     command=lambda w=word["english"], o=option: self._switch(w, o))
+                menu.add_separator()
+                menu.add_command(label="正常翻译",
+                                 command=lambda w=word["english"]: self._switch(w, None))
+                if " " not in word["english"]:
+                    # Keep this meaning for good: the ⚙ window opens with it filled in
+                    menu.add_command(label="加进我的词表…", command=lambda w=word["english"]:
+                                     self.open_settings(w, self.last["chosen"].get(w)))
+                button.config(menu=menu)
+                button.pack(side="left", padx=(0, 4), pady=2)
+
+    def _use_mode(self, mode):
+        """Switch to the mode the text fits (its language hint was clicked) and translate."""
+        self.mode.set(mode)
+        self._on_mode()
+        self.translate()
+
+    def _use_version(self, version):
+        """Show another whole version instead of the current one."""
+        self.last["shown"] = version
+        self._show(version)
+        self._set_status("换成了另一个版本")
+        self._show_choices()
+
+    def _switch(self, english, option):
+        """Switch one stupid word, then rebuild the sentence in a worker thread."""
+        self.last["chosen"][english] = option
+        self.request += 1
+        self._set_status("重新造句…")
+        threading.Thread(target=self._rebuild, args=(self.request, dict(self.last["chosen"])),
+                         daemon=True).start()
+
+    def _rebuild(self, request, chosen):
+        """Worker thread: the sentence with the switched words, sent back via events."""
+        try:
+            sentence = adjust(self.last["text"], chosen, self.last["proper"])
+        except Exception as error:
+            self.events.put(("error", request, str(error)))
+        else:
+            self.events.put(("adjusted", request, sentence))
 
     def copy(self):
         """Copy the translation to the clipboard."""
@@ -301,7 +588,9 @@ class Overlay:
         """Handle everything other threads put in self.events, then check again in POLL_MS.
 
         Events: ("toggle",) from the hotkey, ("hotkey", ok) once the hotkey thread starts,
-        ("result", request, text, mode, seconds) and ("error", request, message) from workers.
+        ("result", request, options dict, mode, seconds), ("adjusted", request, sentence) and
+        ("error", request, message) from workers, ("ollama", runs) and ("ollama started",
+        error or None) about the local model.
         """
         try:
             while True:
@@ -310,11 +599,32 @@ class Overlay:
                     self.toggle()
                 elif kind == "hotkey" and not args[0]:
                     self.hotkey_hint.config(text="")  # the hotkey doesn't work, so don't offer it
+                elif kind == "ollama" and not args[0] and self.check.get():
+                    self._offer_start()  # AI 校对 was ticked, but the local model isn't running
+                elif kind == "ollama started":
+                    self.starting = False
+                    if args[0]:
+                        self.check.set(False)
+                        self._set_status(f"本地模型没启动：{args[0]}", error=True)
+                    else:
+                        self._set_status("本地模型启动好了")
+                elif kind == "adjusted" and args[0] == self.request:
+                    self.last["shown"] = args[1]
+                    self._show(args[1])
+                    self._show_choices()
+                    self._set_status("换好了")
                 elif kind in ("result", "error") and args[0] == self.request:
                     if kind == "result":
-                        _, text, mode, seconds = args
-                        self._show(text)
-                        self._set_status(f"{MODE_INFO.get(mode, (mode,))[0]} · {seconds:.1f}s")
+                        _, result, mode, seconds = args
+                        result["shown"] = result["translation"]
+                        result["chosen"] = {w["english"]: w["chosen"] for w in result["words"]}
+                        self.last = result
+                        self._show(result["translation"])
+                        self._show_choices()
+                        ai = " · AI" if result.get("checked") else ""
+                        self._set_status(f"{MODE_INFO.get(mode, (mode,))[0]}{ai} · {seconds:.1f}s")
+                        if result.get("check_error") == NOT_RUNNING and self.check.get():
+                            self._offer_start()  # the local model stopped since AI 校对 was ticked
                     else:
                         self._show(args[1], error=True)
                         self._set_status("Translation failed", error=True)

@@ -9,7 +9,8 @@ Requests:
     GET  /modes
 
 Responses are JSON: {"text": ..., "mode": ..., "translation": ...} or {"error": ...}.
-Only "text" is required; mode defaults to "stupid" and rarity to the library default.
+Only "text" is required; mode defaults to "stupid" and rarity to the library default (the
+one set in the overlay's ⚙ window, or 0.8).
 check turns on proofreading by a local AI model (see check.py); it is off by default.
 
 Python's standard http.server does the HTTP work: ThreadingHTTPServer accepts connections
@@ -22,8 +23,7 @@ import sys
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import MODES, translate
-from .translator import TARGET_RARITY
+from . import MODES, settings, translate
 
 # 127.0.0.1 means only programs on this computer can connect
 DEFAULT_HOST = "127.0.0.1"
@@ -54,9 +54,12 @@ class Handler(BaseHTTPRequestHandler):
         text = params.get("text")
         if not text:
             return self._send(400, {"error": "Missing 'text'"})
+        if not isinstance(text, str):
+            return self._send(400, {"error": "'text' must be a string"})
         mode = params.get("mode") or "stupid"
         try:
-            rarity = float(params.get("rarity", TARGET_RARITY))
+            rarity = params.get("rarity")
+            rarity = None if rarity in (None, "") else float(rarity)
             # check arrives as true/false in JSON, or as text ("1", "true") in a URL
             check = str(params.get("check", "")).lower() in ("1", "true", "yes")
             translation = translate(text, mode=mode, rarity=rarity, check=check)
@@ -74,7 +77,7 @@ class Handler(BaseHTTPRequestHandler):
         """GET /modes lists the modes; GET /translate?text=... translates."""
         url = urllib.parse.urlparse(self.path)
         if url.path == "/modes":
-            return self._send(200, {"modes": list(MODES), "default_rarity": TARGET_RARITY})
+            return self._send(200, {"modes": list(MODES), "default_rarity": settings.rarity()})
         if url.path == "/translate":
             # parse_qs gives lists ({"text": ["Hello"]}), keep the first value of each
             params = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}

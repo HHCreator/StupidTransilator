@@ -1,15 +1,16 @@
-# Builds the overlay program on Windows and publishes it as a GitHub release, so the download
-# link in the README always has the newest build. Runs on each push to the standalone branch
-# when the code or data changed. A pull request into standalone only builds it (no release);
-# the zip is under Artifacts on the run's page, to try before merging.
+# Builds the desktop program (the overlay window) on Windows and publishes it as a GitHub
+# release, so the download link in the README always has the newest build. Runs on each push
+# to main, the only long-lived branch, when the code or data changed. A pull request into main
+# only builds it (no release); the zip is under Artifacts on the run's page, to try before
+# merging.
 name: Build exe
 
 on:
   push:
-    branches: [standalone]
+    branches: [main]
     paths: ["sbtranslator/**", "overlay.py", "build_exe.py", ".github/workflows/build-exe.yml"]
   pull_request:
-    branches: [standalone]
+    branches: [main]
     paths: ["sbtranslator/**", "overlay.py", "build_exe.py", ".github/workflows/build-exe.yml"]
   workflow_dispatch:
 
