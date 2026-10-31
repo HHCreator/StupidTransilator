@@ -323,7 +323,9 @@ def freedom(neighbours):
 
 
 def known_phrases():
-    """Everything in the translator's tables and in data/surf_common.txt, lowercase."""
+    """Everything in the translator's tables (the files in data/ and your own entries from
+    the overlay's ⚙ window) and in data/surf_common.txt, lowercase."""
+    from . import settings
     known = set()
 
     def add(value):
@@ -348,6 +350,8 @@ def known_phrases():
                     add([line.strip() for line in f if line.strip() and not line.startswith("#")])
             except OSError:
                 pass
+    for table in settings.TABLES:
+        add(settings.words(table))
     known.discard("")
     return known
 

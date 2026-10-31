@@ -48,7 +48,7 @@ SBtranslator/
     └── data/          词表、梗词典、简繁转换表
 ```
 
-根目录的三个 `.py` 只是为了让 `py translator.py` 这种老命令继续能用，代码都在 `sbtranslator/` 里。
+根目录的这些入口 `.py` 只是为了让 `py translator.py` 这种老命令继续能用，代码都在 `sbtranslator/` 里。
 
 ## 3. UML 类图
 

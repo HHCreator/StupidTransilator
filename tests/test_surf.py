@@ -13,7 +13,7 @@ import urllib.parse
 import zlib
 from unittest import mock
 
-from sbtranslator import bilibili, surf
+from sbtranslator import bilibili, settings, surf
 
 NOW = 1_800_000_000
 DAY = 86400
@@ -144,6 +144,21 @@ def message(who, text, sent, n=[0]):
 
 
 class PhraseTest(unittest.TestCase):
+    def setUp(self):
+        # Entries from your own ⚙ window count as known phrases: test with none
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.addCleanup(settings.reload)  # runs last, after the real settings file is back
+        patcher = mock.patch.dict(os.environ, {
+            "SBTRANSLATOR_SETTINGS": os.path.join(folder.name, "settings.json")})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        settings.reload()
+
+    def test_your_own_entries_count_as_known(self):
+        settings.set_entry("memes", "g2", "鸡兔")
+        self.assertIn("鸡兔", surf.known_phrases())
+
     def test_clean(self):
         self.assertEqual(surf.clean("回复 @某人 :绷不住了[doge]"), "绷不住了")
         self.assertEqual(surf.clean("ＹＹＤＳ"), "yyds")

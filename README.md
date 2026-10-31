@@ -246,8 +246,9 @@ times its share before that, and by more than chance: with thousands of phrases 
 some always look like they rose by luck, so a phrase only a handful of people use waits
 until more do. The first run has nothing to compare with, so it also reads as many older
 videos (posted 30 to 90 days ago) to learn what people were already saying; after that,
-each run's lines become the next runs' "before". Phrases the translator already knows, and
-everyday ones in `sbtranslator/data/surf_common.txt`, are left out.
+each run's lines become the next runs' "before". Phrases the translator already knows
+(its tables and your own entries in the ⚙ window), and everyday ones in
+`sbtranslator/data/surf_common.txt`, are left out.
 
 The search words for each game are in `sbtranslator/data/surf_sources.json`; add teams,
 players or tournaments to look in more places. The phrases, with up to 8 example lines each
