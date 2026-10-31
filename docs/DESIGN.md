@@ -22,8 +22,10 @@ SBtranslator/
 ├── learn.py           根目录的入口：py learn.py
 ├── overlay.py         根目录的入口：py overlay.py，也是 exe 的入口
 ├── listen.py          根目录的入口：py listen.py douyu 6657
+├── surf.py            根目录的入口：py surf.py（梗机器人）
 ├── build_exe.py       用 PyInstaller 打包成 dist/SBtranslator-windows.zip
-├── pyproject.toml     pip 安装配置，定义 sbtranslator 等 4 个命令
+├── pyproject.toml     pip 安装配置，定义 sbtranslator 等 5 个命令
+├── tests/             离线测试：py -m unittest（不上网）
 ├── docs/DESIGN.md     这份文档
 └── sbtranslator/      真正的代码（一个 Python 包）
     ├── __init__.py    门面：translate(text, mode, rarity)，外部程序只调用它
@@ -35,6 +37,8 @@ SBtranslator/
     ├── learn.py       维基百科爬虫，学梗和人名
     ├── chat.py        读斗鱼和 Twitch 直播间的弹幕（只读）
     ├── learn_chat.py  从弹幕里找梗
+    ├── bilibili.py    读 B 站：搜视频、读弹幕和热评（只读）
+    ├── surf.py        梗机器人：找 B 站上新出现或变多的说法
     ├── server.py      HTTP 接口，给其他语言的程序用
     ├── overlay.py     置顶悬浮窗
     ├── settings_window.py  悬浮窗的 ⚙ 设置窗口：改词表、稀有度，导入/导出设置，放桌面快捷方式
@@ -44,7 +48,7 @@ SBtranslator/
     └── data/          词表、梗词典、简繁转换表
 ```
 
-根目录的三个 `.py` 只是为了让 `py translator.py` 这种老命令继续能用，代码都在 `sbtranslator/` 里。
+根目录的这些入口 `.py` 只是为了让 `py translator.py` 这种老命令继续能用，代码都在 `sbtranslator/` 里。
 
 ## 3. UML 类图
 
@@ -213,6 +217,24 @@ classDiagram
         +create(path) str
         +state() tuple
     }
+    class surf {
+        <<surf.py 梗机器人>>
+        +fetch(games, words, days, videos_per_game, now)
+        +find_candidates(messages, days, now) tuple
+        +common_phrases(lines, min_people) set
+        +freedom(neighbours) float
+        +surprise(recent, before, people_recent, people_before) float
+        +main()
+    }
+    class bilibili {
+        <<bilibili.py 读B站>>
+        +search_videos(keyword, since, until, order) list
+        +video_info(bvid) dict
+        +danmu(cid) list
+        +comments(aid, pages) list
+        +sign(params, key, now) dict
+        -_request(path, params, signed) dict
+    }
     class DataFiles {
         <<data 文件夹>>
         memes_learned.json
@@ -229,6 +251,9 @@ classDiagram
         opencc/STPhrases.txt
         .cache/round_trip.json
         LOCALAPPDATA/SBtranslator/settings.json
+        surf_sources.json
+        surf_common.txt
+        .cache/surf/
     }
     class OnlineServices {
         <<网上的服务>>
@@ -236,6 +261,7 @@ classDiagram
         Bing Translator
         Wikipedia API
         斗鱼 / Twitch 弹幕
+        B站 搜索、弹幕、评论
         Ollama 本地模型
     }
 
@@ -277,6 +303,9 @@ classDiagram
     learn_chat ..> chat : 读弹幕
     chat ..> OnlineServices : 斗鱼 / Twitch
     learn_chat ..> DataFiles : 写 chat_meanings.json
+    surf ..> bilibili : 搜视频、读弹幕和热评
+    surf ..> DataFiles : 读 surf_sources.json，写 .cache/surf/
+    bilibili ..> OnlineServices : B站
     Meanings ..> DataFiles : 读 chat_meanings.json
     GoogleTranslate ..> OnlineServices : Google
     ClassicalChinese ..> OnlineServices : Bing
@@ -376,6 +405,8 @@ flowchart TD
 | `sbtranslator/settings_window.py` | ⚙ 设置窗口。上面是稀有度（和悬浮窗用同一个变量，两个滑块一起动），中间是词表（梗和名字、日常意思、缩写、短语、外号，一次看一张，列出内置的和你的，点一行可以改或删），下面是导入/导出、恢复默认和放桌面快捷方式。每次改动立刻存盘、下次翻译就用上 |
 | `sbtranslator/settings.py` | 你自己的设置，存在 `%LOCALAPPDATA%\SBtranslator\settings.json`（不在程序文件夹里，所以下载新版 exe 不会丢）。只存你的改动：`words` 是你的词条（盖过内置的），`removed` 是你删掉的内置词条，`rarity` 是稀有度。读表的地方（`_load_memes()`、`inject.tables()`、`inject.phrases()`、`phrases.nicknames()`）都把内置的表交给 `merged()` 合上你的改动；每次改动后清掉这些缓存，所以不用重启。设置只整个替换、不就地修改，翻译线程读到的永远是完整的一份。`translate()` 每次先看文件的修改时间（`refresh()`），别的程序（比如开着的 HTTP 服务器）改过就重新读。导入认得导出的文件，也认得以前手改的 `stupid_words.json` 和 `memes.json`/`phrases.json`/`nicknames.json` 这种平的表 |
 | `sbtranslator/shortcut.py` | 桌面快捷方式。用 Windows 自己的快捷方式对象（IShellLinkW，资源管理器「创建快捷方式」用的就是它），通过 ctypes 按虚函数表的序号调用，不用装包，也不去启动 PowerShell（exe 启动 PowerShell 容易被杀毒软件当成病毒）。桌面位置用 `SHGetFolderPathW` 问 Windows，桌面被 OneDrive 挪走了也找得到。exe 的快捷方式打开 exe 本身；从源码运行时打开 `pythonw overlay.py`，不弹黑窗口 |
+| `sbtranslator/bilibili.py` | 读 B 站公开数据：搜视频、读弹幕、读热评，只读、匿名。WBI 签名、buvid3 访客 cookie、被风控时等一等再试，都在这里，见第 9 节 |
+| `sbtranslator/surf.py` | 梗机器人：按游戏搜视频，读弹幕和热评，找新出现或变多的说法，存进 `.cache/surf/candidates.json`，见第 9 节 |
 | `build_exe.py` | 用 PyInstaller 把 Python、代码和 data 打成一个文件夹再压缩成 zip（不用单文件 exe，因为它容易被杀毒软件误报）|
 
 ## 6. 数据文件
@@ -397,6 +428,9 @@ flowchart TD
 | `.cache/chat/*.tsv` | 录下来的弹幕，每行「用户哈希 + 内容」 | learn_chat.py 读写，不进 git |
 | `.cache/round_trip.json` | 往返查词的缓存（exe 里放在 %LOCALAPPDATA%\SBtranslator） | 第 6 部分读写，git 不管它 |
 | `%LOCALAPPDATA%\SBtranslator\settings.json` | 你在 ⚙ 窗口里的设置：你的词条、删掉的内置词条、稀有度（别的系统在 `~/.config/sbtranslator/`，环境变量 `SBTRANSLATOR_SETTINGS` 可以指定别的文件） | settings.py 读写，盖过上面的内置表 |
+| `data/surf_sources.json` | 梗机器人每个游戏在 B 站搜的词 | 你写，surf.py 读 |
+| `data/surf_common.txt` | 梗机器人永远不列的日常说法（哈哈哈、加油、比赛） | 你写，surf.py 读 |
+| `.cache/surf/` | 梗机器人读到的弹幕和评论（每个视频一个 `.jsonl`，发送者是短哈希）、`videos.json`、`candidates.json` | surf.py 读写，不进 git |
 
 ## 7. 为什么这样设计
 
@@ -421,6 +455,28 @@ flowchart TD
 | 让 AI 造句或挑版本 | 加 `--check`；换模型设环境变量 `SBTRANSLATOR_MODEL`；版本数是 check.py 里的 `VARIANTS` |
 | 从直播间学梗 | 直播时运行 `py listen.py douyu 6657`，学到的越积越多 |
 | 让爬虫学新的页面 | `data/meme_seeds.txt` 加一行，然后运行 `py learn.py` |
+| 让梗机器人看别的视频或别的游戏 | `data/surf_sources.json` 加搜索词或游戏 |
+| 某个普通说法老被梗机器人列出来 | 加进 `data/surf_common.txt` |
+| 梗机器人更敏感或更保守 | `surf.py` 开头的 `MIN_PEOPLE`、`MIN_VIDEOS`、`RISE`、`SURE` |
 | 单字换成完整的词（次 → 次数） | `STANDALONE_FORMS`（第 3 部分） |
 | 补充 Google 词典没有的意思 | `EXTRA_MEANINGS`（第 3 部分） |
 | 某些词不要拆开 | `MIN_SPLIT_LETTERS`、`NOT_PARTS`（第 5 部分） |
+
+## 9. 梗机器人（`surf.py` 和 `bilibili.py`）
+
+目标是自己去 B 站找最新的梗，列出来给人看。现在做的是第一步：找出「新出现或突然变多」的说法，不往翻译器的数据文件里写任何东西。
+
+```mermaid
+flowchart TD
+    A["data/surf_sources.json：每个游戏的搜索词"] --> B["1 搜视频：最近 7 天发布、弹幕最多"]
+    B --> C["2 读弹幕和热评，存进 .cache/surf/（发送者换成短哈希）"]
+    C --> D["3 找说法：整条短弹幕、长句里能单独用的片段、不是英文单词的字母词"]
+    D --> E["4 和以前比：新出现，或者至少多 3 倍（还要排除碰巧）"]
+    E --> F[".cache/surf/candidates.json：说法、例句、来自哪些视频"]
+```
+
+- **只读。** 像没登录的游客一样看：不发弹幕、不评论、不点赞，每两次请求之间等 1.5 秒左右。被 B 站风控拦住（-412、-352）就等 30 秒、60 秒再试，还不行就停下，用已经读到的东西接着分析。
+- **B 站接口。** 搜索和评论要 WBI 签名：从 `/x/web-interface/nav` 拿两个每天会换的 key，按固定顺序打乱拼成 mixin key；参数按名字排序，md5(查询串 + mixin key) 就是 `w_rid`（`bilibili.sign()`，单元测试用 B 站接口文档里的例子核对过）。还要一个 buvid3 访客 cookie（`/x/frontend/finger/spi`）。弹幕用老的 XML 接口 `/x/v1/dm/list.so`，不用签名，返回 deflate 压缩的 XML，里面每条弹幕带发送时间和发送者的哈希。
+- **找说法**（`common_phrases()`、`freedom()`）。先数最近的句子里哪些片段至少有 3 句用过。按长度一层一层数：一个片段只有在它去掉第一个字、去掉最后一个字得到的两个短片段都常见时才数（短的不常见，长的不可能常见），这样内存很省。然后看片段两边的字是不是多样（信息熵）：「绷不住了」常常单独发，两边是句子边界，很自由；「不住了」左边永远是「绷」，只是别的说法的一部分，丢掉。「下饭了」「下饭吧」算「下饭」。
+- **新不新**（`surprise()`）。比较最近 7 天和以前，用这个说法的人占所有发言的人的比例：至少多 3 倍才算变多，以前没人说过就是新的。几千个片段一起比，总有几个是碰巧变多的，所以还做二项检验：假如它其实一直这么常见，「以前的人这么少」的概率要小于 1 /（检查的片段数 × 100），也就是 `SURE = 2`。只有几个人用的新说法会先等一等，等用的人多了再列出来。
+- **第一次运行没有「以前」可比**，所以会多读同样多的旧视频（30 到 90 天前发布的）当基准。以后每次运行，之前读到的句子慢慢变成「以前」，基准越来越大，用的人不多的新梗也能认出来。
