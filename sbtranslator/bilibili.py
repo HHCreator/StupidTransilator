@@ -49,7 +49,10 @@ HEADERS = {
     "Accept": "application/json, text/plain, */*",
     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
 }
-REQUEST_DELAY = 1.5  # seconds between requests (plus up to half a second at random)
+# Seconds between requests, plus up to REQUEST_JITTER at random. From Hao's PC, Bilibili
+# refused everything (HTTP 412, for about an hour) after 28 requests in under a minute.
+REQUEST_DELAY = 5
+REQUEST_JITTER = 2
 RETRIES = 2  # extra tries after Bilibili's risk control refuses a request
 RETRY_WAIT = 30  # seconds to wait before the first extra try; doubles each time
 # 请求被拦截, 风控校验失败, 请求过于频繁 and friends: Bilibili thinks this is a bot
@@ -142,7 +145,7 @@ def _decompress(body, encoding=""):
 def _wait_turn():
     """Keep REQUEST_DELAY seconds (and a little random) between requests."""
     global _last_request
-    pause = _last_request + REQUEST_DELAY + random.uniform(0, 0.5) - time.time()
+    pause = _last_request + REQUEST_DELAY + random.uniform(0, REQUEST_JITTER) - time.time()
     if pause > 0:
         time.sleep(pause)
     _last_request = time.time()

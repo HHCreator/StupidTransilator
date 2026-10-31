@@ -226,12 +226,12 @@ Wikipedia is slow to pick up memes, and live chat only covers the room you liste
 meme bot reads Bilibili by itself. For each game (CS2, League of Legends, Valorant, Dota 2)
 it finds the busiest videos posted in the last 7 days, reads their danmu and hot comments,
 and lists the phrases that are new or rising. It only reads, like a visitor who
-isn't logged in: it never posts, likes or replies, it waits a second or two between
-requests, and it keeps what it read in `sbtranslator/.cache/surf/` with every sender
-replaced by a short hash.
+isn't logged in: it never posts, likes or replies, it waits 5 to 7 seconds between
+requests (ask faster and Bilibili stops answering for an hour), and it keeps what it read
+in `sbtranslator/.cache/surf/` with every sender replaced by a short hash.
 
 ```
-py surf.py                      # read Bilibili for every game, then list new phrases (10-15 min)
+py surf.py                      # read Bilibili for every game, then list new phrases (~20 min)
 py surf.py --games cs2 dota2    # only some games
 py surf.py --videos 3           # 3 videos per game: a quick test
 py surf.py --days 3             # "new" means the last 3 days instead of 7

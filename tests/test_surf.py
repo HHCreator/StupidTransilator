@@ -49,9 +49,10 @@ class BilibiliTest(unittest.TestCase):
     def setUp(self):
         bilibili._cookies = None
         bilibili._wbi = None
-        patcher = mock.patch.object(bilibili, "REQUEST_DELAY", 0)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        for name in ("REQUEST_DELAY", "REQUEST_JITTER"):
+            patcher = mock.patch.object(bilibili, name, 0)
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def fake(self, answers):
         fake = FakeBilibili({**VISITOR, **answers})

@@ -7,8 +7,9 @@
     py surf.py --no-fetch             # don't visit Bilibili; list again from what was read
 
 It only reads, like a visitor who isn't logged in: it never posts, likes or replies, and it
-waits between requests (bilibili.py). A run reads about 60 videos in 10 to 15 minutes; the
-first run reads about twice as many (see step 2).
+waits 5 to 7 seconds between requests (bilibili.py), since Bilibili stops answering a visitor
+who asks faster. A run reads about 40 videos in about 20 minutes; the first run reads about
+twice as many (see step 2).
 
 How it works:
 
@@ -63,7 +64,7 @@ KNOWN_FILES = ["memes.json", "memes_learned.json", "memes_chat.json", "phrases.j
                "nicknames.json", "chat_meanings.json", "stupid_words.json", "players.txt"]
 
 DAYS = 7  # "new" means used in the last DAYS days; videos posted in that time are read
-VIDEOS_PER_GAME = 15  # the videos with the most danmu are read for each game
+VIDEOS_PER_GAME = 10  # the videos with the most danmu are read for each game
 EXPAND = 8  # related-video lists read for each game to find its videos (a request each)
 FILL_DAYS = 30  # too few videos from the last DAYS days: add ones from the last FILL_DAYS
 BASELINE_DAYS = (90, 30)  # older videos (posted 90 to 30 days ago) show what's not new
@@ -640,7 +641,7 @@ def main():
 
     now = time.time()
     if fetching:
-        print("Reading Bilibili (read only, a request every second or two) ...")
+        print("Reading Bilibili (read only, a request every 5 to 7 seconds) ...")
         try:
             fetch(games, where, days, count, now)
         except bilibili.Blocked as error:
