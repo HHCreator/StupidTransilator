@@ -2,7 +2,8 @@
 
 By default it translates in a "stupid" way: every word is translated on its own,
 with no context. Some words keep their natural meaning so the sentence still flows and
-others get a far-off meaning; TARGET_RARITY (or --rarity) sets the average.
+others get a far-off meaning; TARGET_RARITY (or --rarity, or the overlay's ⚙ window) sets
+the average.
 
 Usage:
     py translator.py "Hello world"            # stupid: normal translation, stupid words injected
@@ -294,7 +295,8 @@ PUNCTUATION = {",": "，", ".": "。", "!": "！", "?": "？", ":": "：", ";": 
 # The meaning that fits the sentence counts as rarity 0. Rarity is spread unevenly over
 # the words: some keep their fitting meaning so the sentence still flows, others get a far
 # off meaning, and the AVERAGE over the sentence's words is close to TARGET_RARITY.
-# Meanings rarer than MAX_RARITY are too obscure and never used.
+# Meanings rarer than MAX_RARITY are too obscure and never used. TARGET_RARITY is the
+# default: a rarity set in the overlay's ⚙ window (settings.py) is used instead.
 TARGET_RARITY = 0.8
 MAX_RARITY = 3.0
 # Meanings of the capitalized word (may -> May -> 五月) count as at least this rare
@@ -762,9 +764,10 @@ def _is_english_word(word):
 # =========================================================================================
 
 # Memes and names: learned from Wikipedia by learn.py (data/memes_learned.json) and from
-# English stream chat by learn_chat.py (data/memes_chat.json, KEKW-style words), plus your
-# own entries in data/memes.json, which win. These always replace the word in the stupid
-# modes: lol -> 英雄联盟, teses -> 滔搏们 (plural), karrigan -> 刀锋女王 (near spelling).
+# English stream chat by learn_chat.py (data/memes_chat.json, KEKW-style words), plus the
+# hand-written ones in data/memes.json, which win, and the ones you add in the overlay's ⚙
+# window (settings.py), which win over all of them. These always replace the word in the
+# stupid modes: lol -> 英雄联盟, teses -> 滔搏们 (plural), karrigan -> 刀锋女王 (near spelling).
 MEMES_FILES = [os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", name)
                for name in ("memes_learned.json", "memes_chat.json", "memes.json")]
 _memes = None  # {lowercase English word: Chinese}, loaded by _load_memes()
@@ -780,23 +783,29 @@ NEAR_NAME_LONG = 7
 
 
 def _load_memes():
-    """Load the meme dictionaries into one dict {lowercase word: Chinese} (only once).
+    """Load the meme dictionaries into one dict {lowercase word: Chinese} (only once, and
+    again after a change in the ⚙ window: settings.py sets _memes back to None).
 
-    memes.json is loaded last, so your own entries override learned ones. Keys starting
+    memes.json is loaded last, so the hand-written entries override learned ones, and then
+    your own from the ⚙ window override everything (settings.merged()). Keys starting
     with _ are notes for people (like "_comment"), not memes.
     """
     global _memes, _all_words
     if _memes is None:
-        _memes = {}
+        from . import settings
+        memes = {}
         for path in MEMES_FILES:
             try:
                 with open(path, encoding="utf-8") as f:
-                    _memes.update({k.lower(): v for k, v in json.load(f).items()
-                                   if not k.startswith("_")})
+                    memes.update({k.lower(): v for k, v in json.load(f).items()
+                                  if not k.startswith("_")})
             except (OSError, ValueError):
                 pass  # a missing or broken file just means no memes from it
-        with open(WORDS_FILE, encoding="utf-8") as f:
-            _all_words = {line.strip().lower() for line in f if line.strip()}
+        if _all_words is None:
+            with open(WORDS_FILE, encoding="utf-8") as f:
+                _all_words = {line.strip().lower() for line in f if line.strip()}
+        # Set last: a translation in another thread only ever sees the whole dictionary
+        _memes = settings.merged("memes", memes)
     return _memes
 
 
@@ -1028,7 +1037,8 @@ def main():
 
     # Read the options; whatever is left is the text to translate
     args = sys.argv[1:]
-    target_rarity = TARGET_RARITY
+    from .settings import rarity
+    target_rarity = rarity()  # the one set in the overlay's ⚙ window, or TARGET_RARITY
     if "--rarity" in args:
         i = args.index("--rarity")
         target_rarity = float(args[i + 1])

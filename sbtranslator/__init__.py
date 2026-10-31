@@ -28,14 +28,18 @@ which function in translator.py does the work for each mode.
         learn.py        the Wikipedia crawler that learns memes and names
         server.py       the HTTP API for apps in other languages
         overlay.py      the always-on-top window (and the Windows exe)
+        settings_window.py  its ⚙ window: your word table entries, rarity, import/export
+        settings.py     your own settings, saved outside the program folder
+        shortcut.py     the desktop shortcut (Windows)
         check.py        proofreading by a local AI model (DeepSeek through Ollama)
         chat.py         reading live stream chat (Douyu, Twitch)
         learn_chat.py   learning memes from that chat
         data/           word lists, meme dictionaries, simplified -> traditional tables
 """
 
+from . import settings
 from .translator import (
-    TARGET_RARITY,
+    TARGET_RARITY,  # noqa: F401 (the built-in default rarity, as sbtranslator.TARGET_RARITY)
     clean_text,
     guess_language,
     translate as _translate_proper,
@@ -51,7 +55,7 @@ MODES = ("stupid", "chinese", "wordy", "plain", "proper", "classical")
 ENGLISH_MODES = ("stupid", "wordy", "plain", "proper", "classical")  # the others take Chinese
 
 
-def translate(text, mode="stupid", rarity=TARGET_RARITY, check=False):
+def translate(text, mode="stupid", rarity=None, check=False):
     """Translate English text to Chinese.
 
     mode: "stupid" (a normal translation with stupid words injected, the default),
@@ -59,7 +63,8 @@ def translate(text, mode="stupid", rarity=TARGET_RARITY, check=False):
     (word by word with wrong-but-real meanings), "plain" (word by word, usual meanings),
     "proper" (correct translation) or "classical" (correct, in Classical Chinese with
     traditional characters).
-    rarity: average rarity for "wordy" mode, from 0 (natural) to 3 (obscure).
+    rarity: average rarity for "wordy" mode, from 0 (natural) to 3 (obscure). None means
+    the one set in the overlay's ⚙ window, or TARGET_RARITY (see settings.py).
     check: let a local AI model help (see check.py; needs Ollama with the model downloaded).
     In "stupid" mode it writes the sentence around the stupid words; in "wordy" and
     "plain" it picks the best of several versions and smooths it a little.
@@ -68,6 +73,8 @@ def translate(text, mode="stupid", rarity=TARGET_RARITY, check=False):
     when the online translator can't be reached.
     """
     text = clean_text(text)  # ｌｏｌ -> lol, don’t -> don't
+    settings.refresh()  # word tables changed in the ⚙ window, maybe by another program
+    rarity = settings.rarity() if rarity is None else rarity
     # Each mode is one function (check.py wraps them when check=True)
     if mode == "stupid":
         if check:
@@ -92,7 +99,7 @@ def translate(text, mode="stupid", rarity=TARGET_RARITY, check=False):
     raise ValueError(f"Unknown mode {mode!r}, expected one of {', '.join(MODES)}")
 
 
-def options(text, mode="stupid", rarity=TARGET_RARITY, check=False, versions=4):
+def options(text, mode="stupid", rarity=None, check=False, versions=4):
     """Translate and offer choices, like Google Translate's alternatives. Returns a dict:
 
         translation  the translation (as translate() would give it)
@@ -111,6 +118,8 @@ def options(text, mode="stupid", rarity=TARGET_RARITY, check=False, versions=4):
     and classical give one version.
     """
     text = clean_text(text)
+    settings.refresh()
+    rarity = settings.rarity() if rarity is None else rarity
     found = _options(text, mode, rarity, check, versions)
     found["language"], found["suggested_mode"] = suggest_mode(text, mode)
     return found
@@ -152,6 +161,7 @@ def adjust(text, chosen, proper=None):
     """
     from .chinese import adjust as chinese_adjust, has_chinese
     text = clean_text(text)  # as options() saw it
+    settings.refresh()
     if has_chinese(text):
         return chinese_adjust(text, chosen, proper)
     from .inject import adjust as stupid_adjust

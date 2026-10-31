@@ -8,6 +8,10 @@ other way round) gets a line under the result offering the right mode, like Goog
 Translate's "Translate from". The — button minimizes it to the taskbar,
 and Ctrl+Alt+T hides and shows it from any app (Windows). Needs an internet connection, like the rest of the package.
 
+The ⚙ button opens the settings window (settings_window.py): your own word table entries,
+the rarity, importing and exporting settings, and a desktop shortcut. The first time the
+exe starts, a line at the bottom offers to put that shortcut on the desktop (shortcut.py).
+
 How it works: the window is built with tkinter, which only allows the main thread to touch
 the window. Anything slow runs in other threads instead, and they never touch the window:
 
@@ -23,20 +27,22 @@ self.events is a queue.Queue, which is safe to use from several threads.
 """
 
 import ctypes
+import os
 import queue
+import sys
 import threading
 import time
 import tkinter as tk
 from tkinter import font as tkfont
 from tkinter import messagebox
 
-from . import MODES, adjust, options
+from . import MODES, adjust, options, settings, shortcut
 from .check import MODEL, NOT_RUNNING, CheckUnavailable, ollama_program, running, start_ollama
-from .translator import TARGET_RARITY
 
 TITLE = "SB Translator"
 POLL_MS = 50  # how often the window checks for results, in milliseconds
 ALPHA = 0.96  # window opacity: slightly see-through
+SAVE_DELAY_MS = 600  # the rarity is saved this long after the slider stops moving
 
 # Colours: window border, background, panels (title bar, inputs), text and highlights
 BORDER, BG, PANEL = "#4a4f6a", "#1c1d26", "#2b2d3a"
@@ -98,7 +104,11 @@ class Overlay:
         self.events = queue.Queue()  # results and hotkey presses coming from other threads
         self.request = 0  # id of the latest translation, older ones are dropped
         self.mode = tk.StringVar(value=MODES[0])
-        self.rarity = tk.DoubleVar(value=TARGET_RARITY)
+        # The rarity set last time (settings.py); the ⚙ window's slider shares this variable
+        self.rarity = tk.DoubleVar(value=settings.rarity())
+        self.rarity.trace_add("write", self._on_rarity)
+        self._save_job = None  # the pending save of the rarity, see _on_rarity()
+        self.settings_window = None  # the ⚙ window while it is open (settings_window.py)
         self.check = tk.BooleanVar(value=False)  # proofread by the local AI model (check.py)
         self.starting = False  # the local model (Ollama) is being started
 
@@ -115,6 +125,7 @@ class Overlay:
 
         threading.Thread(target=listen_for_hotkey, args=(self.events,), daemon=True).start()
         root.after(POLL_MS, self._poll)
+        root.after(500, self._offer_shortcut)
 
     # -- layout ---------------------------------------------------------------------------
 
@@ -138,17 +149,11 @@ class Overlay:
         self.hotkey_hint = tk.Label(bar, text=f"{HOTKEY_NAME} to hide/show", bg=PANEL, fg=MUTED,
                                     font=("Segoe UI", 8))
         self.hotkey_hint.pack(side="left")
-        close = tk.Label(bar, text="✕", bg=PANEL, fg=MUTED, font=("Segoe UI", 10), padx=12)
-        close.pack(side="right", fill="y")
-        close.bind("<Button-1>", lambda e: self.root.destroy())
-        close.bind("<Enter>", lambda e: close.config(bg=ERROR, fg=BG))
-        close.bind("<Leave>", lambda e: close.config(bg=PANEL, fg=MUTED))
-        # Minimize to the taskbar; click the taskbar button to bring it back
-        minimize = tk.Label(bar, text="—", bg=PANEL, fg=MUTED, font=("Segoe UI", 10), padx=12)
-        minimize.pack(side="right", fill="y")
-        minimize.bind("<Button-1>", lambda e: self.minimize())
-        minimize.bind("<Enter>", lambda e: minimize.config(bg=ACCENT, fg=BG))
-        minimize.bind("<Leave>", lambda e: minimize.config(bg=PANEL, fg=MUTED))
+        # Buttons on the right, from the right: quit, minimize to the taskbar (click the
+        # taskbar button to bring it back), and the ⚙ settings window
+        self._bar_button(bar, "✕", self.root.destroy, hover=ERROR)
+        self._bar_button(bar, "—", self.minimize)
+        self._bar_button(bar, "⚙", self.open_settings, font=("Segoe UI Symbol", 10))
         # Coming back from the taskbar: draw our own title bar again
         root.bind("<Map>", self._on_restore)
         for widget in (bar, title, self.hotkey_hint):
@@ -180,13 +185,13 @@ class Overlay:
         self.rarity_label.pack(side="left")
         tk.Scale(
             self.rarity_row, variable=self.rarity, from_=0, to=3, resolution=0.1,
-            orient="horizontal", showvalue=False, command=self._on_rarity, bd=0,
+            orient="horizontal", showvalue=False, bd=0,
             highlightthickness=0, sliderrelief="flat", sliderlength=18, width=14,
             bg=ACCENT, activebackground=ACCENT_HOVER, troughcolor=PANEL, length=120,
         ).pack(side="left", fill="x", expand=True)
         tk.Label(self.rarity_row, text="0 natural · 3 obscure", bg=BG, fg=MUTED,
                  font=("Segoe UI", 8)).pack(side="left", padx=(8, 0))
-        self._on_rarity()
+        self._show_rarity()
 
         # Input
         self.input_frame = tk.Frame(content, bg=BG)
@@ -230,6 +235,9 @@ class Overlay:
         self.choices.pack(fill="x")
         self.last = None  # the latest translation's text, normal translation and choices
 
+        # A question at the bottom, like the desktop shortcut offer (_offer_shortcut)
+        self.notice = tk.Frame(content, bg=BG)
+
     def _button(self, parent, text, command, accent=False):
         """Make a flat button; accent=True makes it the highlighted main button."""
         bg, fg = (ACCENT, BG) if accent else (PANEL, FG)
@@ -239,6 +247,15 @@ class Overlay:
             activeforeground=BG, font=("Segoe UI", 9, "bold" if accent else "normal"),
             padx=14, pady=4,
         )
+
+    def _bar_button(self, bar, text, command, hover=ACCENT, font=("Segoe UI", 10)):
+        """Put a button on the right of the title bar; it lights up under the mouse."""
+        button = tk.Label(bar, text=text, bg=PANEL, fg=MUTED, font=font, padx=12, cursor="hand2")
+        button.pack(side="right", fill="y")
+        button.bind("<Button-1>", lambda e: command())
+        button.bind("<Enter>", lambda e: button.config(bg=hover, fg=BG))
+        button.bind("<Leave>", lambda e: button.config(bg=PANEL, fg=MUTED))
+        return button
 
     # -- events ---------------------------------------------------------------------------
 
@@ -262,9 +279,25 @@ class Overlay:
         # The AI check works on the stupid and word-by-word modes
         self.check_box.config(state="normal" if mode in ("stupid", "chinese", "wordy", "plain") else "disabled")
 
-    def _on_rarity(self, value=None):
-        """The slider moved: show the new rarity next to it."""
+    def _show_rarity(self):
         self.rarity_label.config(text=f"Rarity {self.rarity.get():.1f}")
+
+    def _on_rarity(self, *args):
+        """A rarity slider moved (this one or the ⚙ window's): show the new rarity, and save
+        it once the slider has stopped for a moment, so it is there next time."""
+        self._show_rarity()
+        if self.settings_window:
+            self.settings_window.show_rarity()
+        if self._save_job:
+            self.root.after_cancel(self._save_job)
+        self._save_job = self.root.after(SAVE_DELAY_MS, self._save_rarity)
+
+    def _save_rarity(self):
+        self._save_job = None
+        try:
+            settings.set_rarity(self.rarity.get())
+        except OSError as error:
+            self._set_status(f"稀有度没存上：{error}", error=True)
 
     def _set_status(self, text, error=False):
         """Show a short message next to the buttons (red for errors)."""
@@ -305,6 +338,79 @@ class Overlay:
             self.input.focus_force()
         else:
             self.root.withdraw()
+
+    # -- settings and the desktop shortcut ------------------------------------------------
+
+    def open_settings(self, english=None, chinese=None):
+        """Open the ⚙ window (or bring it to the front). With english, it shows that word
+        ready to save with chinese, as picked in a word's menu."""
+        from .settings_window import SettingsWindow
+        if self.settings_window is None:
+            self.settings_window = SettingsWindow(self)
+        else:
+            self.settings_window.show()
+        if english:
+            self.settings_window.prefill(english, chinese)
+
+    def _offer_shortcut(self):
+        """The exe asks once whether to put a shortcut on the desktop, and a new copy (a
+        new download in another folder) asks whether the old shortcut should open it.
+        settings remembers which exe asked, so each copy asks at most once."""
+        if not (getattr(sys, "frozen", False) and shortcut.available()):
+            return  # from source: the ⚙ window has the button
+        here = os.path.normcase(sys.executable)
+        asked = settings.state("shortcut_asked")
+        if asked and os.path.normcase(asked) == here:
+            return
+        try:
+            where, opens = shortcut.state()
+        except Exception:
+            return  # only an offer: never let it get in the way of translating
+        if where == "here" or (where == "missing" and asked):
+            return  # done, or another copy asked and they didn't want one (or deleted it)
+        if where == "missing":
+            question = "要在桌面放一个快捷方式吗？以后双击它就能打开翻译器。"
+        else:
+            question = ("桌面上的 SBtranslator 快捷方式打开的是别的地方的程序"
+                        f"（{opens or '打不开'}），改成打开现在这个吗？")
+        self._show_notice(question, [("好", self._accept_shortcut), ("不用了", self._decline_shortcut)])
+
+    def _accept_shortcut(self):
+        self.hide_notice()
+        try:
+            shortcut.create()
+            settings.set_state("shortcut_asked", sys.executable)
+        except Exception as error:  # OSError from Windows, or anything else ctypes raises
+            self._set_status(f"快捷方式没建成：{error}", error=True)
+        else:
+            self._set_status("桌面快捷方式放好了")
+
+    def _decline_shortcut(self):
+        self.hide_notice()
+        try:
+            settings.set_state("shortcut_asked", sys.executable)
+        except OSError:
+            pass  # then it asks again next time, nothing worse
+        self._set_status("要的话以后在 ⚙ 里放")
+
+    def _show_notice(self, text, actions):
+        """Show a question at the bottom of the window, with a link for each answer:
+        actions is [(label, function), ...]."""
+        for widget in self.notice.winfo_children():
+            widget.destroy()
+        tk.Label(self.notice, text=text, bg=BG, fg=FG, anchor="w", justify="left",
+                 wraplength=380, font=(self.cjk_font, 9)).pack(fill="x")
+        row = tk.Frame(self.notice, bg=BG)
+        row.pack(fill="x", pady=(4, 0))
+        for label, command in actions:
+            link = tk.Label(row, text=label, bg=PANEL, fg=ACCENT, cursor="hand2",
+                            font=(self.cjk_font, 9), padx=10, pady=2)
+            link.pack(side="left", padx=(0, 6))
+            link.bind("<Button-1>", lambda e, c=command: c())
+        self.notice.pack(fill="x", pady=(10, 0))
+
+    def hide_notice(self):
+        self.notice.pack_forget()
 
     # -- the local AI model ---------------------------------------------------------------
 
@@ -433,6 +539,10 @@ class Overlay:
                 menu.add_separator()
                 menu.add_command(label="正常翻译",
                                  command=lambda w=word["english"]: self._switch(w, None))
+                if " " not in word["english"]:
+                    # Keep this meaning for good: the ⚙ window opens with it filled in
+                    menu.add_command(label="加进我的词表…", command=lambda w=word["english"]:
+                                     self.open_settings(w, self.last["chosen"].get(w)))
                 button.config(menu=menu)
                 button.pack(side="left", padx=(0, 4), pady=2)
 

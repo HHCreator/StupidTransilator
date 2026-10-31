@@ -29,7 +29,8 @@ that means nothing: only a few words are stupid, everything around them is norma
        Spell curses the way people type them (他妈的 -> 踏马).
 
 The tables are in data/stupid_words.json (hand-written) and data/phrases.json (approved
-phrases from stream chat, see learn_chat.py); a table entry wins over the rules. With
+phrases from stream chat, see learn_chat.py), plus your own entries from the overlay's ⚙
+window (settings.py), which win over both; a table entry wins over the rules. With
 check=True a local AI model writes the sentence instead of Google, with every stupid word
 required word for word (check.py).
 """
@@ -41,7 +42,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 from difflib import SequenceMatcher
 
-from . import rules
+from . import rules, settings
 from . import translator as t
 from .phrases import nicknames
 
@@ -64,21 +65,29 @@ def _load_json(path):
         return {}
 
 
+# Which of your tables in the ⚙ window (settings.py) changes which hand-written table here.
+# Your memes go into names as well, so they win over a built-in name in the stupid mode too.
+YOUR_TABLES = {"names": "memes", "acronyms": "acronyms", "everyday": "everyday"}
+
+
 def tables():
-    """The hand-written tables: {"names": {...}, "acronyms": {...}, "everyday": {...}}."""
+    """The hand-written tables, with your changes from the ⚙ window (settings.py):
+    {"names": {...}, "acronyms": {...}, "everyday": {...}}. Read again after a change."""
     global _tables
     if _tables is None:
         loaded = _load_json(TABLES_FILE)
-        _tables = {name: {k.lower(): v for k, v in loaded.get(name, {}).items()}
+        _tables = {name: settings.merged(YOUR_TABLES[name],
+                                         {k.lower(): v for k, v in loaded.get(name, {}).items()})
                    for name in ("names", "acronyms", "everyday")}
     return _tables
 
 
 def phrases():
-    """Approved multi-word phrases: {"zywoo play": "载物玩耍"}."""
+    """Approved multi-word phrases, with yours from the ⚙ window: {"zywoo play": "载物玩耍"}."""
     global _phrases
     if _phrases is None:
-        _phrases = {k.lower(): v for k, v in _load_json(PHRASES_FILE).items()}
+        _phrases = settings.merged("phrases",
+                                   {k.lower(): v for k, v in _load_json(PHRASES_FILE).items()})
     return _phrases
 
 

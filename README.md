@@ -9,7 +9,7 @@ Needs Python 3 and an internet connection (it calls Google Translate, and Bing T
 py translator.py "Hello world"            # stupid: a normal sentence with stupid words injected
 py translator.py --chinese "frozen你这个major打得跟teses一样"  # Chinese in, stupid Chinese out
 py translator.py --wordy "Hello world"    # stupid word by word, wrong-but-real meanings
-py translator.py --wordy --rarity 1.5 "Hi"  # same, rarer on average (0 = natural, 3 = obscure, default 0.8)
+py translator.py --wordy --rarity 1.5 "Hi"  # same, rarer on average (0 = natural, 3 = obscure, default 0.8 or the overlay's ⚙ setting)
 py translator.py --plain "Hello world"    # word by word, usual meanings
 py translator.py --proper "Hello world"   # normal whole-sentence translation
 py translator.py --classical "Hello"      # correct Classical Chinese (文言文) in traditional characters, via Bing
@@ -100,7 +100,7 @@ a word is seen this takes about 10 requests; results are cached in `sbtranslator
 
 ## Overlay window (standalone exe)
 
-**Download: [SBtranslator-windows.zip](https://github.com/HHCreator/StupidTransilator/releases/latest/download/SBtranslator-windows.zip)** (Windows, no install, no Python needed). Unzip it and run `SBtranslator.exe` inside the `SBtranslator` folder (keep the `_internal` folder next to it). The exe is not code signed, so Windows may warn about an unknown publisher; choose More info > Run anyway. GitHub builds it from this branch on every change, see the [Build exe workflow](.github/workflows/build-exe.yml).
+**Download: [SBtranslator-windows.zip](https://github.com/HHCreator/StupidTransilator/releases/latest/download/SBtranslator-windows.zip)** (Windows, no install, no Python needed). Unzip it and run `SBtranslator.exe` inside the `SBtranslator` folder (keep the `_internal` folder next to it). The first time, a line at the bottom of the window offers to put a shortcut on the desktop, so after that it starts from there (a new download in another folder offers to point that shortcut at itself; the ⚙ window has a button for it too). The exe is not code signed, so Windows may warn about an unknown publisher; choose More info > Run anyway. GitHub builds it from this branch on every change, see the [Build exe workflow](.github/workflows/build-exe.yml).
 
 A small always-on-top window to translate while you are in another app or a game:
 type an English sentence, press Enter, and the Chinese shows below. Pick the mode with the
@@ -123,10 +123,40 @@ programs often flag that as a virus. Controls:
 - After translating, “其他版本” lists other versions of the sentence (click one to use it), and in the stupid mode “点蠢词换个意思” has a button for each stupid word: pick another wrong meaning, or 正常翻译 to translate that word normally, and the sentence is rebuilt
 - Ctrl+Alt+T hides and shows it from any app (if another app already uses that key, the hint
   in the title bar disappears and the hotkey is off)
+- ⚙ in the title bar opens the settings (below); a stupid word's menu also has “加进我的词表…”,
+  which opens them with that word and its current meaning filled in
 
 It stays above normal windows, but a game in exclusive fullscreen can hide it (use windowed
 or borderless mode). The exe keeps the round trip cache in `%LOCALAPPDATA%\SBtranslator`.
 Without building, `pip install` also adds a `sbtranslator-overlay` command.
+
+### Settings (⚙)
+
+Your own word table entries and the rarity are changed in the overlay instead of in the data
+files, and every change is used from the next translation on (no restart):
+
+- **词表 (word tables)**: 梗和名字 (always replaced: frozen → 冰雪奇缘), 日常意思 (the everyday
+  meaning, used when the sentence means something else: major → 主要), 缩写 (expanded, then
+  translated word by word: hltv → half life tv), 短语 (several words together: zywoo play →
+  载物玩耍) and 外号 (a player's Chinese nickname: zywoo → 载物). The list shows the built-in
+  entries and yours (来源: 内置, 学到的, 我加的, 我改的). Click a row to change or delete it, or
+  type a new word and its Chinese and press Enter. A changed built-in entry can go back with
+  恢复内置; a deleted one comes back with 恢复默认 (which undoes all your changes).
+- **稀有度 (rarity)**: the 逐词 mode's slider, the same one as in the main window. It is
+  remembered, and the command line and the HTTP server use it too when no rarity is given.
+- **导入设置… / 导出设置…**: save your settings to a `.json` file to keep or give to a friend,
+  and add such a file to yours (the file's entries win). Old hand-edited tables import too:
+  `stupid_words.json`, or a flat `{English: Chinese}` file like `memes.json`, `phrases.json`
+  or `nicknames.json`.
+- **在桌面放快捷方式**: puts `SBtranslator` on the desktop (Windows). From source it runs
+  `overlay.py` with `pythonw`, so no console window opens.
+
+They are saved in `%LOCALAPPDATA%\SBtranslator\settings.json` (on other systems
+`~/.config/sbtranslator/settings.json`; set `SBTRANSLATOR_SETTINGS` to use another file),
+outside the program folder, so a new download of the exe keeps them. They win over the
+built-in tables in `sbtranslator/data`, which a new version may update. Python apps using the
+package and the HTTP server see the same entries; a change made in the overlay while they run
+is picked up at their next translation.
 
 ## Learning memes
 
@@ -149,7 +179,7 @@ py learn.py "Top Esports" "Sarah Kerrigan"    # learn specific pages
 py learn.py --links 50 "League of Legends"    # also learn up to 50 pages each one links to
 ```
 
-Learned entries go to `sbtranslator/data/memes_learned.json`. Put your own in `sbtranslator/data/memes.json`; they win.
+Learned entries go to `sbtranslator/data/memes_learned.json`. Add your own in the overlay's ⚙ window (梗和名字), or in `sbtranslator/data/memes.json`; they win.
 
 ## Learning memes from live stream chat
 
