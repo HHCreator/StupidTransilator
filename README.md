@@ -1,6 +1,8 @@
 # StupidTransilator
 This translator mean to generate stupid translation from English to Chinese for meme purpose
 
+**Windows desktop app: [download SBtranslator-windows.zip](https://github.com/HHCreator/StupidTransilator/releases/latest/download/SBtranslator-windows.zip)**, unzip it and run `SBtranslator.exe` (see [Overlay window](#overlay-window-standalone-exe)). The rest of this page is for running it from source.
+
 ## Usage
 
 Needs Python 3 and an internet connection (it calls Google Translate, and Bing Translator for Classical Chinese). No extra packages.
@@ -100,7 +102,7 @@ a word is seen this takes about 10 requests; results are cached in `sbtranslator
 
 ## Overlay window (standalone exe)
 
-**Download: [SBtranslator-windows.zip](https://github.com/HHCreator/StupidTransilator/releases/latest/download/SBtranslator-windows.zip)** (Windows, no install, no Python needed). Unzip it and run `SBtranslator.exe` inside the `SBtranslator` folder (keep the `_internal` folder next to it). The first time, a line at the bottom of the window offers to put a shortcut on the desktop, so after that it starts from there (a new download in another folder offers to point that shortcut at itself; the ⚙ window has a button for it too). The exe is not code signed, so Windows may warn about an unknown publisher; choose More info > Run anyway. GitHub builds it from this branch on every change, see the [Build exe workflow](.github/workflows/build-exe.yml).
+**Download: [SBtranslator-windows.zip](https://github.com/HHCreator/StupidTransilator/releases/latest/download/SBtranslator-windows.zip)** (Windows, no install, no Python needed). Unzip it and run `SBtranslator.exe` inside the `SBtranslator` folder (keep the `_internal` folder next to it). The first time, a line at the bottom of the window offers to put a shortcut on the desktop, so after that it starts from there (a new download in another folder offers to point that shortcut at itself; the ⚙ window has a button for it too). The exe is not code signed, so Windows may warn about an unknown publisher; choose More info > Run anyway. GitHub builds it from `main` on every change (a pull request into `main` builds a test zip, under Artifacts on the run's page), see the [Build exe workflow](.github/workflows/build-exe.yml).
 
 A small always-on-top window to translate while you are in another app or a game:
 type an English sentence, press Enter, and the Chinese shows below. Pick the mode with the
