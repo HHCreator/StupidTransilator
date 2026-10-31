@@ -302,7 +302,8 @@ class FindVideosTest(unittest.TestCase):
         followed = []
         with mock.patch.object(bilibili, "search_videos", return_value=[]), \
                 mock.patch.object(bilibili, "related_videos",
-                                  side_effect=lambda bvid: followed.append(bvid) or []):
+                                  side_effect=lambda bvid: followed.append(bvid) or []), \
+                mock.patch("builtins.print"):
             surf.find_videos("cs2", {"words": ["CS2"], "seeds": []}, videos, NOW, 7, 3)
         self.assertEqual(followed, ["BV1read00002", "BV1read00001"])  # newest first
 

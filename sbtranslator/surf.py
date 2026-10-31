@@ -201,6 +201,9 @@ def find_videos(game, source, videos, now, days, count, search=None):
         posted = (v for v in found.values() if start <= v["pubdate"] <= end)
         return sorted(posted, key=lambda v: -v["danmu"])
 
+    week = sum(video["pubdate"] >= since for video in found.values())
+    print(f"  followed {len(followed)} related-video lists: {len(found)} videos about {game}, "
+          f"{week} posted in the last {days} days")
     recent = busiest(since, now)[:count]
     if len(recent) < count:
         recent += busiest(now - FILL_DAYS * DAY, since - 1)[:count - len(recent)]
