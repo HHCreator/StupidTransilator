@@ -1,0 +1,9 @@
+{
+ "_comment": "Where the meme bot (py surf.py) looks. For each game, the words it searches Bilibili for; it reads the videos posted in the last few days that have the most danmu. Add words (teams, players, tournaments, streamers) to look in more places, or a new game with its own words.",
+ "bilibili": {
+  "cs2": ["CS2", "CS2比赛", "CSGO"],
+  "lol": ["英雄联盟", "LPL", "英雄联盟比赛"],
+  "valorant": ["无畏契约", "瓦罗兰特", "无畏契约比赛"],
+  "dota2": ["DOTA2", "刀塔", "DOTA2比赛"]
+ }
+}
