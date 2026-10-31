@@ -37,6 +37,9 @@ SBtranslator/
     ├── learn_chat.py  从弹幕里找梗
     ├── server.py      HTTP 接口，给其他语言的程序用
     ├── overlay.py     置顶悬浮窗
+    ├── settings_window.py  悬浮窗的 ⚙ 设置窗口：改词表、稀有度，导入/导出设置，放桌面快捷方式
+    ├── settings.py    你自己的设置（词条、稀有度），存在程序文件夹外面
+    ├── shortcut.py    桌面快捷方式（Windows）
     ├── check.py       用本地 AI 模型（DeepSeek，经 Ollama）校对傻瓜翻译
     └── data/          词表、梗词典、简繁转换表
 ```
@@ -179,9 +182,36 @@ classDiagram
         +translate()
         +copy()
         +toggle()
+        +open_settings(english, chinese)
         -_work(request, text, mode, rarity)
         -_poll()
         -_build()
+        -_offer_shortcut()
+    }
+    class SettingsWindow {
+        <<settings_window.py>>
+        +prefill(english, chinese)
+        +save()
+        +delete()
+        +import_settings()
+        +export_settings()
+        +make_shortcut()
+    }
+    class settings {
+        <<settings.py 你的设置>>
+        +rarity() float
+        +merged(table, built_in) dict
+        +rows(table) list
+        +set_entry(table, english, chinese)
+        +delete_entry(table, english)
+        +import_file(path) dict
+        +export_file(path)
+        +refresh()
+    }
+    class shortcut {
+        <<shortcut.py>>
+        +create(path) str
+        +state() tuple
     }
     class DataFiles {
         <<data 文件夹>>
@@ -198,6 +228,7 @@ classDiagram
         opencc/STCharacters.txt
         opencc/STPhrases.txt
         .cache/round_trip.json
+        LOCALAPPDATA/SBtranslator/settings.json
     }
     class OnlineServices {
         <<网上的服务>>
@@ -211,6 +242,13 @@ classDiagram
     BaseHTTPRequestHandler <|-- Handler
     Handler ..> sbtranslator : translate()
     Overlay ..> sbtranslator : translate()
+    Overlay ..> SettingsWindow : ⚙
+    Overlay ..> shortcut : 第一次打开时问
+    SettingsWindow ..> settings : 改词条、稀有度
+    SettingsWindow ..> shortcut : 放到桌面
+    settings ..> DataFiles : 读写 settings.json
+    inject ..> settings : 表 + 你的词条
+    Memes ..> settings : 梗 + 你的梗
     sbtranslator ..> inject : stupid
     sbtranslator ..> Pipeline : wordy / plain
     inject ..> GoogleTranslate : 整句翻译
@@ -246,7 +284,7 @@ classDiagram
 
 **怎么看这张图：**
 
-- 代码大部分是函数，不是类。图里写着「translator.py 第 N 部分」的方框，是 `translator.py` 里的一组函数，当成一个类来画，好看清它们的分工；名字（Pipeline、Meanings 等）是为这张图起的，代码里没有这些类。代码里真正的类只有 `Handler`（server.py）和 `Overlay`（overlay.py）。
+- 代码大部分是函数，不是类。图里写着「translator.py 第 N 部分」的方框，是 `translator.py` 里的一组函数，当成一个类来画，好看清它们的分工；名字（Pipeline、Meanings 等）是为这张图起的，代码里没有这些类。代码里真正的类只有 `Handler`（server.py）、`Overlay`（overlay.py）和 `SettingsWindow`（settings_window.py）。
 - `+` 是给外面用的函数，`-` 是内部函数（名字以 `_` 开头）。只写了重要的函数，完整的列表看代码。
 - 空心三角箭头是继承：`Handler` 继承 Python 自带的 `BaseHTTPRequestHandler`。
 - 虚线箭头是「调用 / 用到」，箭头上的字说明用来做什么。
@@ -334,7 +372,10 @@ flowchart TD
 | `sbtranslator/phrases.py` | 弹幕短语表。至少 3 个人发过的短弹幕（8 个字以内）切成词，每个词找英文：先查外号表（载物 → zywoo），再看英文意思里有没有选手 ID（设备 → device），都没有就用最常见的意思（生命 → life），拼成 life game → 生命游戏 这样的候选。`py listen.py --review` 逐个确认，确认的进 `phrases.json` |
 | `sbtranslator/check.py` | 本地模型（`--check`）。默认傻瓜模式里由它造句（见第 4 节）；wordy 和 plain 模式里是校对。傻瓜模式一次生成 4 个版本（共用同一批查询，不多花请求），交给本机 Ollama 里的 DeepSeek-R1 14b，让它挑最好笑、但还读得通的一个，只准增删「的、了、在」这类虚词。程序会核对：去掉虚词和标点后，句子必须和它挑的那个一模一样，否则就不用它的修改。连不上 Ollama 就退回普通结果，`options()` 的 `checked` 和 `check_error` 告诉悬浮窗 AI 有没有用上、为什么没用上。这里从不自己启动 Ollama：悬浮窗在勾上「AI 校对」时（或翻译时发现它停了）先问人，同意了才调用 `start_ollama()` 在后台（不开窗口）启动它 |
 | `sbtranslator/server.py` | HTTP 接口。Python 自带的 `ThreadingHTTPServer` 每来一个请求就开一个线程，交给 `Handler`；`Handler` 只负责把请求转成 `translate()` 调用，再把结果写成 JSON |
-| `sbtranslator/overlay.py` | 悬浮窗。tkinter 只允许主线程碰窗口，所以翻译在工作线程里做，热键在热键线程里等；两者都把结果放进队列 `events`，主线程每 50 毫秒用 `_poll()` 取出来显示 |
+| `sbtranslator/overlay.py` | 悬浮窗。tkinter 只允许主线程碰窗口，所以翻译在工作线程里做，热键在热键线程里等；两者都把结果放进队列 `events`，主线程每 50 毫秒用 `_poll()` 取出来显示。稀有度滑块的值停下 0.6 秒后存进设置；exe 第一次打开时在窗口底部问要不要放桌面快捷方式（`_offer_shortcut()`），记住是哪个 exe 问过的，所以每份 exe 最多问一次，新下载的放在别处的 exe 会问要不要把旧快捷方式改成打开它 |
+| `sbtranslator/settings_window.py` | ⚙ 设置窗口。上面是稀有度（和悬浮窗用同一个变量，两个滑块一起动），中间是词表（梗和名字、日常意思、缩写、短语、外号，一次看一张，列出内置的和你的，点一行可以改或删），下面是导入/导出、恢复默认和放桌面快捷方式。每次改动立刻存盘、下次翻译就用上 |
+| `sbtranslator/settings.py` | 你自己的设置，存在 `%LOCALAPPDATA%\SBtranslator\settings.json`（不在程序文件夹里，所以下载新版 exe 不会丢）。只存你的改动：`words` 是你的词条（盖过内置的），`removed` 是你删掉的内置词条，`rarity` 是稀有度。读表的地方（`_load_memes()`、`inject.tables()`、`inject.phrases()`、`phrases.nicknames()`）都把内置的表交给 `merged()` 合上你的改动；每次改动后清掉这些缓存，所以不用重启。设置只整个替换、不就地修改，翻译线程读到的永远是完整的一份。`translate()` 每次先看文件的修改时间（`refresh()`），别的程序（比如开着的 HTTP 服务器）改过就重新读。导入认得导出的文件，也认得以前手改的 `stupid_words.json` 和 `memes.json`/`phrases.json`/`nicknames.json` 这种平的表 |
+| `sbtranslator/shortcut.py` | 桌面快捷方式。用 Windows 自己的快捷方式对象（IShellLinkW，资源管理器「创建快捷方式」用的就是它），通过 ctypes 按虚函数表的序号调用，不用装包，也不去启动 PowerShell（exe 启动 PowerShell 容易被杀毒软件当成病毒）。桌面位置用 `SHGetFolderPathW` 问 Windows，桌面被 OneDrive 挪走了也找得到。exe 的快捷方式打开 exe 本身；从源码运行时打开 `pythonw overlay.py`，不弹黑窗口 |
 | `build_exe.py` | 用 PyInstaller 把 Python、代码和 data 打成一个文件夹再压缩成 zip（不用单文件 exe，因为它容易被杀毒软件误报）|
 
 ## 6. 数据文件
@@ -355,6 +396,7 @@ flowchart TD
 | `data/opencc/*.txt` | 简体 → 繁体对照表 | 第 2 部分读 |
 | `.cache/chat/*.tsv` | 录下来的弹幕，每行「用户哈希 + 内容」 | learn_chat.py 读写，不进 git |
 | `.cache/round_trip.json` | 往返查词的缓存（exe 里放在 %LOCALAPPDATA%\SBtranslator） | 第 6 部分读写，git 不管它 |
+| `%LOCALAPPDATA%\SBtranslator\settings.json` | 你在 ⚙ 窗口里的设置：你的词条、删掉的内置词条、稀有度（别的系统在 `~/.config/sbtranslator/`，环境变量 `SBTRANSLATOR_SETTINGS` 可以指定别的文件） | settings.py 读写，盖过上面的内置表 |
 
 ## 7. 为什么这样设计
 
@@ -363,17 +405,19 @@ flowchart TD
 - **用到才加载，加载一次。** 词表、OpenCC 表、梗词典第一次用到时才读，存在以 `_` 开头的模块变量里，之后直接用。往返查词的结果还存到文件，下次运行也不用再查。
 - **每个网络请求都有备用方案。** Google 两个接口轮流试；Bing 的会话过期就重新拿；往返查词或词典查询失败，就跳过这个「额外」步骤，不让整句翻译失败。
 - **并行查词。** 每个词要查好几次，所以用 4 个线程同时查。缓存被多个线程共用，用锁保护。
-- **优先级明确。** 手写的梗 > 学到的梗 > 过去式规则 > 稀有度分配。复合词拆出来的部分保持自然意思，因为拆开本身已经够傻了。
+- **优先级明确。** 你在 ⚙ 里的词条 > 手写的梗 > 学到的梗 > 过去式规则 > 稀有度分配。复合词拆出来的部分保持自然意思，因为拆开本身已经够傻了。
+- **你的设置和程序的表分开放。** 程序自带的表在 data 文件夹里，跟着新版本更新；你的改动单独存在程序文件夹外面，只记「加了什么、改了什么、删了什么」，所以换新版本既不丢你的改动，也能拿到新版本加的词条。
 - **可调的东西集中放。** 想改效果只需要改第 3 部分的设置和 data 文件夹里的文件，不用动逻辑。
 
 ## 8. 想改效果，改哪里
 
 | 想要 | 改哪里 |
 |---|---|
-| 整体更傻或更正常 | `TARGET_RARITY`（第 3 部分），或运行时加 `--rarity` |
-| 加一个梗 | `data/memes.json`，比如 `"off": "关"` |
-| 加蠢词、梗名、缩写 | `data/stupid_words.json`（默认傻瓜模式） |
-| 加选手外号或短语 | `data/nicknames.json`、`data/phrases.json`，或 `py listen.py --review` 确认弹幕里的候选 |
+| 整体更傻或更正常（逐词模式） | 悬浮窗 ⚙ 里的稀有度；默认值是 `TARGET_RARITY`（第 3 部分）；运行时也可以加 `--rarity` |
+| 加一个梗 | 悬浮窗 ⚙ →「梗和名字」；要随程序一起发布的写进 `data/memes.json`，比如 `"off": "关"` |
+| 加蠢词、梗名、缩写 | 悬浮窗 ⚙ →「日常意思」「缩写」；要随程序发布的写进 `data/stupid_words.json` |
+| 加选手外号或短语 | 悬浮窗 ⚙ →「外号」「短语」；或 `data/nicknames.json`、`data/phrases.json`，或 `py listen.py --review` 确认弹幕里的候选 |
+| 把设置带到别的电脑 | ⚙ →「导出设置…」，那边「导入设置…」 |
 | 让 AI 造句或挑版本 | 加 `--check`；换模型设环境变量 `SBTRANSLATOR_MODEL`；版本数是 check.py 里的 `VARIANTS` |
 | 从直播间学梗 | 直播时运行 `py listen.py douyu 6657`，学到的越积越多 |
 | 让爬虫学新的页面 | `data/meme_seeds.txt` 加一行，然后运行 `py learn.py` |

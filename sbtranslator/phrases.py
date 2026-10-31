@@ -52,8 +52,18 @@ def _save(path, data):
 
 
 def nicknames():
-    """{Chinese nickname: player handle}, from data/nicknames.json."""
-    return {k: v.lower() for k, v in _load(NICKNAMES_FILE, {}).items()}
+    """{Chinese nickname: player handle}, from data/nicknames.json and the ⚙ window.
+
+    Your entries in the ⚙ window (settings.py) are {player: nickname} and win over the
+    file's for that player; a player can have several nicknames in the file, and those all
+    stay unless you changed or deleted that player.
+    """
+    from . import settings
+    yours, gone = settings.words("nicknames"), settings.removed("nicknames")
+    found = {k: v.lower() for k, v in _load(NICKNAMES_FILE, {}).items()
+             if v.lower() not in yours and v.lower() not in gone}
+    found.update({nickname: player for player, nickname in yours.items()})
+    return found
 
 
 def players():
