@@ -12,8 +12,14 @@ first run reads about twice as many (see step 2).
 
 How it works:
 
-    1. Find videos     For each game, search Bilibili with its words in data/surf_sources.json
-                       for videos posted in the last DAYS days, most danmu first.
+    1. Find videos     Bilibili asks a visitor's search for a captcha more often than not, and
+                       the bot never solves captchas. So it finds videos the way a viewer
+                       does: in the related videos beside a video. For each game it starts
+                       from the seeds in data/surf_sources.json and the newest videos it read
+                       before, keeps following the newest videos it finds (EXPAND lists),
+                       and reads the ones posted in the last DAYS days with the most danmu.
+                       Only videos whose titles name the game count. The search is tried
+                       too, once, and used while Bilibili answers it.
     2. Read            Read each video's danmu and hot comments into the cache folder (surf/),
                        with every sender replaced by a short hash. The first time, it also
                        reads some older videos (posted 30 to 90 days ago), so it knows what
@@ -58,6 +64,8 @@ KNOWN_FILES = ["memes.json", "memes_learned.json", "memes_chat.json", "phrases.j
 
 DAYS = 7  # "new" means used in the last DAYS days; videos posted in that time are read
 VIDEOS_PER_GAME = 15  # the videos with the most danmu are read for each game
+EXPAND = 8  # related-video lists read for each game to find its videos (a request each)
+FILL_DAYS = 30  # too few videos from the last DAYS days: add ones from the last FILL_DAYS
 BASELINE_DAYS = (90, 30)  # older videos (posted 90 to 30 days ago) show what's not new
 BASELINE_SHARE = 1  # ... as many of them as recent ones (only the first time)
 MIN_BEFORE_MESSAGES = 2000  # fewer earlier messages than this and older videos are read
@@ -101,30 +109,103 @@ def _save_json(path, data):
 
 
 def sources():
-    """{game: [Bilibili search words]} from data/surf_sources.json."""
+    """{game: {"words": [...], "seeds": [...]}} from data/surf_sources.json: the words a
+    title must contain to be about the game, and links to videos to start from."""
     games = _load_json(SOURCES_FILE, {}).get("bilibili", {})
-    return {game: words for game, words in games.items() if not game.startswith("_")}
+    found = {}
+    for game, source in games.items():
+        if game.startswith("_"):
+            continue
+        if isinstance(source, list):  # the first version of the file only had search words
+            source = {"words": source}
+        found[game] = {"words": list(source.get("words") or []),
+                       "seeds": list(source.get("seeds") or [])}
+    return found
 
 
 def messages_path(bvid):
     return os.path.join(SURF_DIR, "bilibili", f"{bvid}.jsonl")
 
 
-def find_videos(words, since, until, count):
-    """The count videos with the most danmu among those found by the search words."""
+def about(title, words):
+    """Whether a title names the game: it contains one of the game's words, in any case."""
+    title = unicodedata.normalize("NFKC", title or "").lower()
+    return any(unicodedata.normalize("NFKC", word).lower() in title for word in words)
+
+
+def find_videos(game, source, videos, now, days, count, search=None):
+    """The videos to read for a game: (recent, older, seeds).
+
+    recent: the count busiest videos posted in the last days days (topped up with ones from
+    the last FILL_DAYS days when there are too few); older: the busiest ones posted 30 to 90
+    days ago, to compare with; seeds: the game's seeds in surf_sources.json, read as they are.
+
+    They come from related videos: the lists Bilibili shows beside a video, which a visitor
+    gets without a captcha. It follows the seeds first, then the newest videos found, then
+    the newest ones read before (videos, from videos.json), up to EXPAND lists. The search is
+    tried once per run (search is a dict shared by the games: {"refused": bool}).
+    """
+    since = now - days * DAY
+    search = {} if search is None else search
     found = {}
-    for word in words:
-        for order in ("dm", "pubdate"):  # most danmu; newest when that finds nothing
-            try:
-                results = bilibili.search_videos(word, since, until, order)
-            except bilibili.Error as error:
-                print(f"  search for {word} failed: {error}")
-                results = []
-            for video in results:
-                found.setdefault(video["bvid"], video)
-            if results:
-                break
-    return sorted(found.values(), key=lambda v: -v["danmu"])[:count]
+
+    def add(video):
+        if video["bvid"] not in found and about(video["title"], source["words"]):
+            found[video["bvid"]] = video
+
+    for word in source["words"]:
+        if search.get("refused"):
+            break
+        try:
+            for video in bilibili.search_videos(word, since, now):
+                add(video)
+        except bilibili.Captcha:
+            search["refused"] = True
+            print("  Bilibili wants a captcha for the search, so it's skipped this time")
+        except bilibili.Error as error:
+            print(f"  search for {word} failed: {error}")
+
+    seeds = []
+    for link in source["seeds"]:
+        try:
+            bvid = bilibili.bvid_of(link)
+        except OSError as error:  # a b23.tv link that doesn't lead anywhere
+            bvid = None
+            print(f"  couldn't open the seed {link}: {error}")
+        if bvid and bvid not in seeds:
+            seeds.append(bvid)
+    read_before = [bvid for bvid, video in sorted(videos.items(),
+                                                  key=lambda item: -(item[1].get("pubdate") or 0))
+                   if video.get("game") == game]
+    followed = set()
+    for _ in range(EXPAND):
+        newest = [video["bvid"] for video in sorted(found.values(), key=lambda v: -v["pubdate"])
+                  if video["pubdate"] >= since]
+        starts = seeds[:EXPAND // 2] + newest + read_before + seeds  # a few seeds first
+        bvid = next((b for b in starts if b not in followed), None)
+        if bvid is None:
+            break
+        followed.add(bvid)
+        try:
+            related = bilibili.related_videos(bvid)
+        except bilibili.Captcha:
+            print("  Bilibili wants a captcha for related videos, so they're skipped this time")
+            break
+        except bilibili.Error as error:
+            print(f"  couldn't list the videos related to {bvid}: {error}")
+            continue
+        for video in related:
+            add(video)
+
+    def busiest(start, end):
+        posted = (v for v in found.values() if start <= v["pubdate"] <= end)
+        return sorted(posted, key=lambda v: -v["danmu"])
+
+    recent = busiest(since, now)[:count]
+    if len(recent) < count:
+        recent += busiest(now - FILL_DAYS * DAY, since - 1)[:count - len(recent)]
+    first, last = BASELINE_DAYS
+    return recent, busiest(now - first * DAY, now - last * DAY), seeds
 
 
 def read_video(video, game, videos):
@@ -144,8 +225,8 @@ def read_video(video, game, videos):
         found += bilibili.danmu(cid)
     try:
         found += bilibili.comments(info["aid"], COMMENT_PAGES)
-    except bilibili.Error:
-        pass  # comments closed or hidden on this video: its danmu are still worth keeping
+    except (bilibili.Error, bilibili.Captcha):
+        pass  # comments closed, hidden or behind a captcha: the danmu are still worth keeping
     new = []
     for message in found:
         if message["id"] not in seen:
@@ -163,25 +244,35 @@ def read_video(video, game, videos):
     return (sum(m["kind"] == "danmu" for m in new), sum(m["kind"] == "comment" for m in new))
 
 
-def fetch(games, words, days, videos_per_game, now):
-    """Steps 1 and 2: find each game's newest busy videos and read them."""
+def fetch(games, sources, days, videos_per_game, now):
+    """Steps 1 and 2: find each game's busiest recent videos and read them."""
     videos = _load_json(VIDEOS_FILE, {})
     before = collections.Counter(game for game, _, message in load_messages(videos)
                                  if 0 < message["sent"] < now - days * DAY)
+    search = {}  # shared by the games: once the search asks for a captcha, it's skipped
     for game in games:
-        print(f"{game}: searching Bilibili for {', '.join(words[game])} ...")
-        found = find_videos(words[game], now - days * DAY, now, videos_per_game)
+        print(f"{game}: looking for videos ...")
+        recent, older, seeds = find_videos(game, sources[game], videos, now, days,
+                                           videos_per_game, search)
+        found = list(recent)
         if before[game] < MIN_BEFORE_MESSAGES:
             # Nothing much to compare with yet: also read some older videos
-            oldest, newest = BASELINE_DAYS
-            older = find_videos(words[game], now - oldest * DAY, now - newest * DAY,
-                                max(2, videos_per_game // BASELINE_SHARE))
-            recent = {video["bvid"] for video in found}
-            found += [dict(video, baseline=True) for video in older if video["bvid"] not in recent]
+            have = {video["bvid"] for video in found}
+            found += [dict(video, baseline=True) for video in older
+                      if video["bvid"] not in have][:max(2, videos_per_game // BASELINE_SHARE)]
+        have = {video["bvid"] for video in found}
+        found += [{"bvid": bvid} for bvid in seeds if bvid not in videos and bvid not in have]
+        if not found:
+            print(f"{game}: found no videos. Add a link to a recent {game} video under "
+                  f'"seeds" in {SOURCES_FILE}')
+            continue
         print(f"{game}: reading {len(found)} videos ...")
         for video in found:
             try:
                 danmu, comments = read_video(video, game, videos)
+            except bilibili.Captcha as error:
+                print(f"  skipped {video['bvid']}: {error}")
+                continue
             except bilibili.Error as error:
                 print(f"  skipped {video['bvid']}: {error}")
                 continue
@@ -195,7 +286,7 @@ def fetch(games, words, days, videos_per_game, now):
             finally:
                 _save_json(VIDEOS_FILE, videos)  # keep what was read if the run stops
             print(f"  {video['bvid']}  {danmu} new danmu, {comments} new comments  "
-                  f"{video['title'][:40]}")
+                  f"{videos[video['bvid']]['title'][:40]}")
 
 
 def load_messages(videos=None):
@@ -516,8 +607,8 @@ def main():
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")  # print Chinese in the Windows console
     args = sys.argv[1:]
-    words = sources()
-    games, days, count, people, fetching = list(words), DAYS, VIDEOS_PER_GAME, MIN_PEOPLE, True
+    where = sources()
+    games, days, count, people, fetching = list(where), DAYS, VIDEOS_PER_GAME, MIN_PEOPLE, True
     try:
         while args:
             option = args.pop(0)
@@ -539,16 +630,16 @@ def main():
                 raise ValueError(option)
     except (ValueError, IndexError):
         sys.exit(__doc__.split("It only reads")[0].strip())
-    unknown = [game for game in games if game not in words]
+    unknown = [game for game in games if game not in where]
     if unknown or not games:
         sys.exit(f"Unknown game {', '.join(unknown) or '(none given)'}; "
-                 f"data/surf_sources.json has: {', '.join(words)}")
+                 f"data/surf_sources.json has: {', '.join(where)}")
 
     now = time.time()
     if fetching:
         print("Reading Bilibili (read only, a request every second or two) ...")
         try:
-            fetch(games, words, days, count, now)
+            fetch(games, where, days, count, now)
         except bilibili.Blocked as error:
             print(error)
             print("Listing phrases from what was read so far.")

@@ -224,8 +224,8 @@ and words of 4 letters or fewer are never split (into stays 进入).
 
 Wikipedia is slow to pick up memes, and live chat only covers the room you listen to, so the
 meme bot reads Bilibili by itself. For each game (CS2, League of Legends, Valorant, Dota 2)
-it finds the videos posted in the last 7 days with the most danmu, reads their danmu and hot
-comments, and lists the phrases that are new or rising. It only reads, like a visitor who
+it finds the busiest videos posted in the last 7 days, reads their danmu and hot comments,
+and lists the phrases that are new or rising. It only reads, like a visitor who
 isn't logged in: it never posts, likes or replies, it waits a second or two between
 requests, and it keeps what it read in `sbtranslator/.cache/surf/` with every sender
 replaced by a short hash.
@@ -252,8 +252,17 @@ each run's lines become the next runs' "before". Phrases the translator already 
 (its tables and your own entries in the ⚙ window), and everyday ones in
 `sbtranslator/data/surf_common.txt`, are left out.
 
-The search words for each game are in `sbtranslator/data/surf_sources.json`; add teams,
-players or tournaments to look in more places. The phrases, with up to 8 example lines each
+**Finding videos.** Bilibili asks a visitor's search for a captcha more often than not,
+and the bot never solves captchas, so it finds videos the way a viewer does: in the related
+videos shown beside a video. For each game it starts from a few seed videos, follows the
+related videos to the newest busy ones whose titles name the game, and next time carries on
+from what it read, so seeds are only needed to get going. It still tries the search once a
+run and uses it when Bilibili answers. Each game's title words and seed links are in
+`sbtranslator/data/surf_sources.json`: add teams, players or tournaments to the words to
+catch more videos, and a link to a recent video (a BV link or a b23.tv share link) to the
+seeds when a game runs dry. The bot says when it found nothing for a game.
+
+The phrases, with up to 8 example lines each
 and the videos they came from, are saved to `sbtranslator/.cache/surf/candidates.json`.
 Nothing is added to the translator's data files. Its offline tests (they never visit
 Bilibili) run with `py -m unittest`.

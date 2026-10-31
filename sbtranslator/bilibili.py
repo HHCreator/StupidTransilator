@@ -4,6 +4,8 @@ Everything here only reads, anonymously: nothing is ever posted, liked or sent, 
 is used. The bot sees what anyone sees on a video page without logging in.
 
     search_videos(keyword, since, until)   videos for a search word, most danmu first
+    related_videos(bvid)                   the videos Bilibili shows beside a video
+    bvid_of(link)                          the BV id of a video link, b23.tv short links too
     video_info(bvid)                       a video's title, ids, parts and counts
     danmu(cid)                             the danmu (弹幕) on one part of a video
     comments(aid)                          the hot comments under a video, with their replies
@@ -21,7 +23,8 @@ Bilibili's web API expects what a browser sends, so every request carries:
 
 When Bilibili thinks a visitor is a bot it answers with code -412 or -352 ("risk control").
 Then this waits and tries again a couple of times, and raises Blocked if it still can't get
-through, so a run never hammers the site.
+through, so a run never hammers the site. When it asks for a captcha (a "v_voucher"), this
+gives up on that request at once and raises Captcha: the bot never solves captchas.
 """
 
 import gzip
@@ -65,6 +68,11 @@ _last_request = 0.0
 
 class Blocked(Exception):
     """Bilibili's risk control keeps refusing this computer's requests for now."""
+
+
+class Captcha(Blocked):
+    """Bilibili wants a captcha solved before it answers. The bot never solves captchas and
+    waiting doesn't help, so this gives up on the request at once; the caller skips it."""
 
 
 class Error(Exception):
@@ -180,8 +188,8 @@ def _request(path, params=None, signed=False, raw=False, ok_codes=(0,), post=Fal
             data = answer.get("data")
             if isinstance(data, dict) and list(data) == ["v_voucher"]:
                 # Risk control can also answer "fine" with only a voucher for a captcha
-                code, message = -352, "captcha wanted (v_voucher)"
-            elif code in ok_codes:
+                raise Captcha(f"Bilibili wants a captcha solved before it answers {path}")
+            if code in ok_codes:
                 return data
             if code not in BLOCKED_CODES:
                 raise Error(f"{path}: Bilibili says {message or 'error'} (code {code})")
@@ -242,12 +250,35 @@ def _number(value):
         return 0
 
 
+BVID = re.compile(r"BV[0-9A-Za-z]{10}")
+SHORT_LINK = re.compile(r"(?:https?://)?b23\.tv/[0-9A-Za-z]+")
+
+
+def _video(item):
+    """The bot's video dict for an entry in any of Bilibili's video lists: {"bvid", "aid",
+    "title", "author", "pubdate", "plays", "danmu", "comments", "url"}."""
+    stat = item.get("stat") if isinstance(item.get("stat"), dict) else {}
+    owner = item.get("owner") if isinstance(item.get("owner"), dict) else {}
+    pubdate = item.get("pubdate") or item.get("created") or 0
+    return {
+        "bvid": item["bvid"],
+        "aid": item.get("aid"),
+        # Search results come with the search word highlighted: <em class="keyword">CS2</em>
+        "title": html.unescape(re.sub(r"<[^>]+>", "", item.get("title") or "")),
+        "author": owner.get("name") or item.get("author") or "",
+        "pubdate": pubdate if isinstance(pubdate, int) else 0,
+        "plays": _number(stat.get("view", item.get("play"))),
+        "danmu": _number(stat.get("danmaku", item.get("video_review"))),
+        "comments": _number(stat.get("reply", item.get("review"))),
+        "url": f"https://www.bilibili.com/video/{item['bvid']}",
+    }
+
+
 def search_videos(keyword, since, until, order="dm", page=1):
     """Videos found by a search word, posted between the unix times since and until.
 
     order: dm (most danmu first), click (most played), pubdate (newest), scores (most
-    comments). Returns [{"bvid", "aid", "title", "author", "pubdate", "plays", "danmu",
-    "comments", "url"}].
+    comments). Bilibili often answers a visitor's search with a captcha (Captcha).
     """
     data = _request("/x/web-interface/wbi/search/type",
                     {"search_type": "video", "keyword": keyword, "order": order, "page": page,
@@ -256,22 +287,32 @@ def search_videos(keyword, since, until, order="dm", page=1):
     for item in (data or {}).get("result") or []:
         if item.get("type") != "video" or not item.get("bvid"):
             continue
-        pubdate = item.get("pubdate") or 0
-        if not since <= pubdate <= until:
-            continue  # in case the search ignores the time range
-        videos.append({
-            "bvid": item["bvid"],
-            "aid": item.get("aid"),
-            # Titles come with the search word highlighted: <em class="keyword">CS2</em>
-            "title": html.unescape(re.sub(r"<[^>]+>", "", item.get("title", ""))),
-            "author": item.get("author", ""),
-            "pubdate": pubdate,
-            "plays": _number(item.get("play")),
-            "danmu": _number(item.get("video_review")),
-            "comments": _number(item.get("review")),
-            "url": f"https://www.bilibili.com/video/{item['bvid']}",
-        })
+        video = _video(item)
+        if since <= video["pubdate"] <= until:  # in case the search ignores the time range
+            videos.append(video)
     return videos
+
+
+def related_videos(bvid):
+    """The videos Bilibili shows beside a video (相关推荐, about 40), like search_videos()
+    returns them. Unlike the search, a visitor gets this list without a captcha."""
+    data = _request("/x/web-interface/archive/related", {"bvid": bvid})
+    return [_video(item) for item in data or [] if isinstance(item, dict) and item.get("bvid")]
+
+
+def bvid_of(link):
+    """The BV id in a video link (or a BV id on its own), or None. A b23.tv short link, the
+    kind the app shares, is followed to the video it points to."""
+    found = BVID.search(link)
+    short = None if found else SHORT_LINK.search(link)
+    if short:
+        url = short.group()
+        _wait_turn()
+        request = urllib.request.Request(url if url.startswith("http") else f"https://{url}",
+                                         headers=HEADERS)
+        with urllib.request.urlopen(request, timeout=20) as response:
+            found = BVID.search(response.geturl())
+    return found.group() if found else None
 
 
 def video_info(bvid):
@@ -362,7 +403,7 @@ def comments(aid, pages=3):
             if cursor.get("is_end") or not offset:
                 break
         return messages
-    except Error:
+    except (Error, Captcha):
         if messages:
             return messages
     for page in range(1, pages + 1):  # sort=1: most liked first

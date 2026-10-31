@@ -117,6 +117,30 @@ class BilibiliTest(unittest.TestCase):
         self.assertEqual(videos[0]["title"], "CS2 名场面 & 集锦")
         self.assertEqual(videos[0]["danmu"], 12000)
 
+    def test_related_videos_are_read_like_search_results(self):
+        self.fake({"/x/web-interface/archive/related": {"code": 0, "data": [
+            {"bvid": "BV1aaaaaaaaa", "aid": 1, "title": "CS2 &amp; 名场面", "pubdate": NOW - DAY,
+             "owner": {"mid": 9, "name": "up"}, "stat": {"view": 5000, "danmaku": 321}},
+            {"aid": 2, "title": "a bangumi episode, which has no bvid"}]}})
+        videos = bilibili.related_videos("BV1sssssssss")
+        self.assertEqual([v["title"] for v in videos], ["CS2 & 名场面"])
+        self.assertEqual((videos[0]["danmu"], videos[0]["author"], videos[0]["pubdate"]),
+                         (321, "up", NOW - DAY))
+
+    def test_a_link_gives_its_bvid_and_a_short_link_is_followed(self):
+        self.assertEqual(bilibili.bvid_of("https://www.bilibili.com/video/BV1xx411c7mD/?p=2"),
+                         "BV1xx411c7mD")
+        self.assertEqual(bilibili.bvid_of("BV1xx411c7mD"), "BV1xx411c7mD")
+        self.assertIsNone(bilibili.bvid_of("not a link"))
+        response = mock.MagicMock()
+        response.__enter__.return_value.geturl.return_value = \
+            "https://m.bilibili.com/video/BV1yy411c7mE?share_source=copy"
+        with mock.patch.object(bilibili.urllib.request, "urlopen",
+                               return_value=response) as urlopen:
+            self.assertEqual(bilibili.bvid_of("【CS2 名场面-哔哩哔哩】 https://b23.tv/AbC1234"),
+                             "BV1yy411c7mE")
+        self.assertEqual(urlopen.call_args.args[0].full_url, "https://b23.tv/AbC1234")
+
     def test_risk_control_waits_retries_then_gives_up(self):
         self.fake({"/x/web-interface/view": {"code": -352, "message": "风控校验失败"}})
         with mock.patch.object(bilibili.time, "sleep") as sleep, \
@@ -127,11 +151,15 @@ class BilibiliTest(unittest.TestCase):
         self.assertEqual(waits, [bilibili.RETRY_WAIT, bilibili.RETRY_WAIT * 2])
 
 
-    def test_a_captcha_voucher_counts_as_being_blocked(self):
-        self.fake({"/x/web-interface/wbi/search/type": {"code": 0, "data": {"v_voucher": "v"}}})
-        with mock.patch.object(bilibili.time, "sleep"), mock.patch("builtins.print"):
-            with self.assertRaises(bilibili.Blocked):
+    def test_a_captcha_is_never_retried(self):
+        fake = self.fake({"/x/web-interface/wbi/search/type":
+                          {"code": 0, "data": {"v_voucher": "v"}}})
+        with mock.patch.object(bilibili.time, "sleep") as sleep:
+            with self.assertRaises(bilibili.Captcha):  # a kind of Blocked
                 bilibili.search_videos("CS2", NOW - DAY, NOW)
+        self.assertFalse([call for call in sleep.call_args_list if call.args[0] >= 1])
+        searches = [call for call in fake.calls if call[0].endswith("/search/type")]
+        self.assertEqual(len(searches), 1)
 
     def test_an_answer_that_isnt_json_is_an_error(self):
         self.fake({"/x/web-interface/view": b"<html>busy</html>"})
@@ -227,6 +255,87 @@ class PhraseTest(unittest.TestCase):
         found, summary = surf.find_candidates(lines, days=7, now=NOW)
         self.assertEqual([(c["phrase"], c["status"]) for c in found], [("绷不住了", "first look")])
         self.assertFalse(summary["lol"]["baseline"])
+
+
+class FindVideosTest(unittest.TestCase):
+    """Finding a game's videos without the search: by following related videos."""
+
+    SOURCE = {"words": ["CS2", "CSGO"], "seeds": ["https://www.bilibili.com/video/BV1seed00001"]}
+
+    def video(self, bvid, title, days_ago, danmu):
+        return {"bvid": bvid, "aid": 1, "title": title, "author": "up",
+                "pubdate": NOW - days_ago * DAY, "plays": 0, "danmu": danmu, "comments": 0}
+
+    def test_it_follows_related_videos_from_the_seeds_to_the_newest_ones(self):
+        related = {
+            "BV1seed00001": [self.video("BV1new000001", "CS2 major 决赛", 1, 500),
+                             self.video("BV1old000001", "CSGO 回忆", 60, 9000),
+                             self.video("BV1lol000001", "英雄联盟 S16", 1, 99999)],
+            "BV1new000001": [self.video("BV1new000002", "cs2 名场面", 2, 800),
+                             self.video("BV1mid000001", "CS2 老比赛", 20, 300)]}
+        followed = []
+
+        def related_videos(bvid):
+            followed.append(bvid)
+            return related.get(bvid, [])
+
+        search = {}
+        with mock.patch.object(bilibili, "search_videos",
+                               side_effect=bilibili.Captcha("captcha")) as searched, \
+                mock.patch.object(bilibili, "related_videos", side_effect=related_videos), \
+                mock.patch("builtins.print"):
+            recent, older, seeds = surf.find_videos("cs2", self.SOURCE, {}, NOW, 7, 3, search)
+            surf.find_videos("valorant", {"words": ["无畏契约"], "seeds": []}, {}, NOW, 7, 3,
+                             search)
+        self.assertEqual(searched.call_count, 1)  # after a captcha the search is skipped
+        self.assertEqual(followed, ["BV1seed00001", "BV1new000001", "BV1new000002"])
+        # The week's busiest first, topped up from the last 30 days; other games are left out
+        self.assertEqual([v["bvid"] for v in recent],
+                         ["BV1new000002", "BV1new000001", "BV1mid000001"])
+        self.assertEqual([v["bvid"] for v in older], ["BV1old000001"])
+        self.assertEqual(seeds, ["BV1seed00001"])
+
+    def test_without_seeds_it_starts_from_the_games_videos_read_before(self):
+        videos = {"BV1read00001": {"game": "cs2", "pubdate": NOW - 9 * DAY},
+                  "BV1read00002": {"game": "cs2", "pubdate": NOW - 3 * DAY},
+                  "BV1read00003": {"game": "lol", "pubdate": NOW - DAY}}
+        followed = []
+        with mock.patch.object(bilibili, "search_videos", return_value=[]), \
+                mock.patch.object(bilibili, "related_videos",
+                                  side_effect=lambda bvid: followed.append(bvid) or []):
+            surf.find_videos("cs2", {"words": ["CS2"], "seeds": []}, videos, NOW, 7, 3)
+        self.assertEqual(followed, ["BV1read00002", "BV1read00001"])  # newest first
+
+    def test_fetch_reads_the_week_some_older_videos_and_new_seeds(self):
+        recent = [self.video("BV1new000001", "CS2", 1, 500)]
+        older = [self.video("BV1old000001", "CS2", 60, 900)]
+        read = []
+
+        def read_video(video, game, videos):
+            read.append((video["bvid"], video.get("baseline", False)))
+            videos[video["bvid"]] = {"game": game, "title": "t", "read": []}
+            return 1, 0
+
+        with tempfile.TemporaryDirectory() as folder, \
+                mock.patch.object(surf, "VIDEOS_FILE", os.path.join(folder, "videos.json")), \
+                mock.patch.object(surf, "find_videos",
+                                  return_value=(recent, older, ["BV1seed00001"])), \
+                mock.patch.object(surf, "read_video", side_effect=read_video), \
+                mock.patch("builtins.print"):
+            surf.fetch(["cs2"], {"cs2": self.SOURCE}, 7, 3, NOW)
+        self.assertEqual(read, [("BV1new000001", False), ("BV1old000001", True),
+                                ("BV1seed00001", False)])
+
+    def test_the_first_version_of_the_sources_file_still_works(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "sources.json")
+            with open(path, "w", encoding="utf-8") as f:
+                lol = {"words": ["LPL"], "seeds": ["BV1xx411c7mD"]}
+                json.dump({"bilibili": {"_comment": "", "cs2": ["CS2"], "lol": lol}}, f)
+            with mock.patch.object(surf, "SOURCES_FILE", path):
+                self.assertEqual(surf.sources(), {
+                    "cs2": {"words": ["CS2"], "seeds": []},
+                    "lol": {"words": ["LPL"], "seeds": ["BV1xx411c7mD"]}})
 
 
 class ReadVideoTest(unittest.TestCase):

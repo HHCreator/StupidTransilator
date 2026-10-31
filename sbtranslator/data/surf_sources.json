@@ -1,9 +1,9 @@
 {
- "_comment": "Where the meme bot (py surf.py) looks. For each game, the words it searches Bilibili for; it reads the videos posted in the last few days that have the most danmu. Add words (teams, players, tournaments, streamers) to look in more places, or a new game with its own words.",
+ "_comment": "Where the meme bot (py surf.py) looks on Bilibili. For each game: words, which a video's title must contain (any case) to count as that game's, so add teams, players and tournaments to catch more; and seeds, links to a few recent videos of the game (match replays, popular clips with lots of danmu; BV links or b23.tv share links) that it starts from. It follows the related videos beside them to the newest busy ones, and remembers what it read for next time, so seeds are only needed to start, or when a game runs dry.",
  "bilibili": {
-  "cs2": ["CS2", "CS2比赛", "CSGO"],
-  "lol": ["英雄联盟", "LPL", "英雄联盟比赛"],
-  "valorant": ["无畏契约", "瓦罗兰特", "无畏契约比赛"],
-  "dota2": ["DOTA2", "刀塔", "DOTA2比赛"]
+  "cs2": {"words": ["CS2", "CSGO", "CS:GO", "反恐精英"], "seeds": []},
+  "lol": {"words": ["英雄联盟", "LOL", "LPL", "LCK", "全球总决赛"], "seeds": []},
+  "valorant": {"words": ["无畏契约", "瓦罗兰特", "VALORANT", "VCT"], "seeds": []},
+  "dota2": {"words": ["DOTA", "刀塔"], "seeds": []}
  }
 }

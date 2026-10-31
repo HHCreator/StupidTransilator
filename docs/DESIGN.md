@@ -228,7 +228,9 @@ classDiagram
     }
     class bilibili {
         <<bilibili.py 读B站>>
+        +related_videos(bvid) list
         +search_videos(keyword, since, until, order) list
+        +bvid_of(link) str
         +video_info(bvid) dict
         +danmu(cid) list
         +comments(aid, pages) list
@@ -261,7 +263,7 @@ classDiagram
         Bing Translator
         Wikipedia API
         斗鱼 / Twitch 弹幕
-        B站 搜索、弹幕、评论
+        B站 相关推荐、搜索、弹幕、评论
         Ollama 本地模型
     }
 
@@ -428,7 +430,7 @@ flowchart TD
 | `.cache/chat/*.tsv` | 录下来的弹幕，每行「用户哈希 + 内容」 | learn_chat.py 读写，不进 git |
 | `.cache/round_trip.json` | 往返查词的缓存（exe 里放在 %LOCALAPPDATA%\SBtranslator） | 第 6 部分读写，git 不管它 |
 | `%LOCALAPPDATA%\SBtranslator\settings.json` | 你在 ⚙ 窗口里的设置：你的词条、删掉的内置词条、稀有度（别的系统在 `~/.config/sbtranslator/`，环境变量 `SBTRANSLATOR_SETTINGS` 可以指定别的文件） | settings.py 读写，盖过上面的内置表 |
-| `data/surf_sources.json` | 梗机器人每个游戏在 B 站搜的词 | 你写，surf.py 读 |
+| `data/surf_sources.json` | 梗机器人每个游戏的标题词（words）和起点视频（seeds） | 你写，surf.py 读 |
 | `data/surf_common.txt` | 梗机器人永远不列的日常说法（哈哈哈、加油、比赛） | 你写，surf.py 读 |
 | `.cache/surf/` | 梗机器人读到的弹幕和评论（每个视频一个 `.jsonl`，发送者是短哈希）、`videos.json`、`candidates.json` | surf.py 读写，不进 git |
 
@@ -455,7 +457,7 @@ flowchart TD
 | 让 AI 造句或挑版本 | 加 `--check`；换模型设环境变量 `SBTRANSLATOR_MODEL`；版本数是 check.py 里的 `VARIANTS` |
 | 从直播间学梗 | 直播时运行 `py listen.py douyu 6657`，学到的越积越多 |
 | 让爬虫学新的页面 | `data/meme_seeds.txt` 加一行，然后运行 `py learn.py` |
-| 让梗机器人看别的视频或别的游戏 | `data/surf_sources.json` 加搜索词或游戏 |
+| 让梗机器人看别的视频或别的游戏 | `data/surf_sources.json` 加标题词、起点视频链接或游戏 |
 | 某个普通说法老被梗机器人列出来 | 加进 `data/surf_common.txt` |
 | 梗机器人更敏感或更保守 | `surf.py` 开头的 `MIN_PEOPLE`、`MIN_VIDEOS`、`RISE`、`SURE` |
 | 单字换成完整的词（次 → 次数） | `STANDALONE_FORMS`（第 3 部分） |
@@ -468,14 +470,15 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A["data/surf_sources.json：每个游戏的搜索词"] --> B["1 搜视频：最近 7 天发布、弹幕最多"]
+    A["data/surf_sources.json：每个游戏的标题词和起点视频"] --> B["1 找视频：顺着相关推荐找，最近 7 天发布、弹幕最多"]
     B --> C["2 读弹幕和热评，存进 .cache/surf/（发送者换成短哈希）"]
     C --> D["3 找说法：整条短弹幕、长句里能单独用的片段、不是英文单词的字母词"]
     D --> E["4 和以前比：新出现，或者至少多 3 倍（还要排除碰巧）"]
     E --> F[".cache/surf/candidates.json：说法、例句、来自哪些视频"]
 ```
 
-- **只读。** 像没登录的游客一样看：不发弹幕、不评论、不点赞，每两次请求之间等 1.5 秒左右。被 B 站风控拦住（-412、-352）就等 30 秒、60 秒再试，还不行就停下，用已经读到的东西接着分析。
+- **只读。** 像没登录的游客一样看：不发弹幕、不评论、不点赞，每两次请求之间等 1.5 秒左右。被 B 站风控拦住（-412、-352）就等 30 秒、60 秒再试，还不行就停下，用已经读到的东西接着分析。要验证码（返回 v_voucher）就直接跳过那个请求，不等也不重试：机器人从不过验证码。
+- **找视频**（`find_videos()`）。B 站对游客的搜索经常要验证码，所以机器人像普通观众一样，顺着视频旁边的「相关推荐」找（`/x/web-interface/archive/related`，游客不用验证码）：每个游戏先从 `surf_sources.json` 里的起点视频（seeds）开始，再顺着找到的最新视频接着找，最多读 `EXPAND` 个相关推荐列表，标题里有这个游戏的词才算。挑最近 7 天发布、弹幕最多的读，不够就加最近 30 天的。以后每次从上次读过的最新视频接着找，所以起点视频只在开头、或者某个游戏断了的时候才需要（找不到视频时会提示）。搜索每次运行还是试一次，B 站肯回答就用。2026 年 10 月在 Hao 的电脑上试过：老分区接口（电子竞技 171）2025 年 4 月以后就不更新了，UP 主的视频列表也要验证码。
 - **B 站接口。** 搜索和评论要 WBI 签名：从 `/x/web-interface/nav` 拿两个每天会换的 key，按固定顺序打乱拼成 mixin key；参数按名字排序，md5(查询串 + mixin key) 就是 `w_rid`（`bilibili.sign()`，单元测试用 B 站接口文档里的例子核对过）。还要一个 buvid3 访客 cookie（`/x/frontend/finger/spi`）。弹幕用老的 XML 接口 `/x/v1/dm/list.so`，不用签名，返回 deflate 压缩的 XML，里面每条弹幕带发送时间和发送者的哈希。
 - **找说法**（`common_phrases()`、`freedom()`）。先数最近的句子里哪些片段至少有 3 句用过。按长度一层一层数：一个片段只有在它去掉第一个字、去掉最后一个字得到的两个短片段都常见时才数（短的不常见，长的不可能常见），这样内存很省。然后看片段两边的字是不是多样（信息熵）：「绷不住了」常常单独发，两边是句子边界，很自由；「不住了」左边永远是「绷」，只是别的说法的一部分，丢掉。「下饭了」「下饭吧」算「下饭」。
 - **新不新**（`surprise()`）。比较最近 7 天和以前，用这个说法的人占所有发言的人的比例：至少多 3 倍才算变多，以前没人说过就是新的。几千个片段一起比，总有几个是碰巧变多的，所以还做二项检验：假如它其实一直这么常见，「以前的人这么少」的概率要小于 1 /（检查的片段数 × 100），也就是 `SURE = 2`。只有几个人用的新说法会先等一等，等用的人多了再列出来。
