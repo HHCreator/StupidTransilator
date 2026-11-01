@@ -19,6 +19,7 @@ sbtranslator = "sbtranslator.translator:main"
 sbtranslator-learn = "sbtranslator.learn:main"
 sbtranslator-listen = "sbtranslator.learn_chat:main"
 sbtranslator-server = "sbtranslator.server:main"
+sbtranslator-surf = "sbtranslator.surf:main"
 
 [project.gui-scripts]
 sbtranslator-overlay = "sbtranslator.overlay:main"
