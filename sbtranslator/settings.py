@@ -15,12 +15,14 @@ It looks like this (every part is optional):
      "words": {"memes": {"g2": "鸡兔"}, "everyday": {"sick": "病态"}},
      "removed": {"everyday": ["good"]},
      "meme_level": "max",
-     "bot_folder": "G:\\MemeLearnerBot"}
+     "bot_folder": "G:\\MemeLearnerBot",
+     "bot_memes": {"off": ["合影"], "cues": {"野距": ["jungle gap", "jg diff"]}}}
 
 "words" holds your entries, {English: Chinese}, and they win over the built-in ones;
 "removed" lists the built-in entries you deleted. "meme_level" is the 玩梗程度 for the
 memes MemeLearnerBot learned (none, some or max; see bot_memes.py), and "bot_folder" the
-bot's folder, when you chose one. The code that uses a table passes its
+bot's folder, when you chose one. "bot_memes" holds your changes to the bot's memes:
+the ones not to use, and English cues of your own instead of the model's (meme_cues.py). The code that uses a table passes its
 built-in entries through merged() (translator._load_memes(), inject.tables(),
 inject.phrases(), phrases.nicknames()), and every change here makes it read the tables
 again, so a change is used from the next translation on, without restarting. A change
@@ -97,7 +99,8 @@ def _clean(data):
     """The parts of a loaded settings file that make sense, in the shape the code expects:
     {"rarity": float or None, "words": {table: {English: Chinese}}, "removed": {table:
     [English, ...]}, "state": {...}, "meme_level": a MEME_LEVELS or None, "bot_folder": path
-    or None}. Anything else is dropped."""
+    or None, "bot_memes": {"off": [phrase, ...], "cues": {phrase: [cue, ...]}}}. Anything
+    else is dropped."""
     rarity = data.get("rarity")
     words, removed = {}, {}
     for table in TABLES:
@@ -110,11 +113,17 @@ def _clean(data):
             removed[table] = sorted({clean_english(k) for k in gone if isinstance(k, str)})
     state = data.get("state")
     level, folder = data.get("meme_level"), data.get("bot_folder")
+    edits = data.get("bot_memes") if isinstance(data.get("bot_memes"), dict) else {}
+    off = edits.get("off") if isinstance(edits.get("off"), list) else []
+    cues = edits.get("cues") if isinstance(edits.get("cues"), dict) else {}
     return {"rarity": _rarity_value(rarity) if _is_number(rarity) else None,
             "words": words, "removed": removed,
             "state": state if isinstance(state, dict) else {},
             "meme_level": level if level in MEME_LEVELS else None,
-            "bot_folder": folder.strip() if isinstance(folder, str) and folder.strip() else None}
+            "bot_folder": folder.strip() if isinstance(folder, str) and folder.strip() else None,
+            "bot_memes": {"off": sorted({p for p in off if isinstance(p, str) and p}),
+                          "cues": {p: [c for c in found if isinstance(c, str) and c.strip()]
+                                   for p, found in cues.items() if isinstance(found, list)}}}
 
 
 def _is_number(value):
@@ -175,7 +184,8 @@ def _store(data):
                          for table, found in data["words"].items() if found},
                "removed": {table: gone for table, gone in data["removed"].items() if gone},
                "state": data["state"], "meme_level": data["meme_level"],
-               "bot_folder": data["bot_folder"]}
+               "bot_folder": data["bot_folder"],
+               "bot_memes": {part: found for part, found in data["bot_memes"].items() if found}}
     temporary = path + ".tmp"
     with open(temporary, "w", encoding="utf-8") as f:
         json.dump({k: v for k, v in content.items() if v not in (None, {})}, f,
@@ -263,6 +273,34 @@ def set_bot_folder(path):
         data = _copy()
         data["bot_folder"] = path or None
         _store(data)
+
+
+def meme_edits():
+    """Your changes to the bot's memes: {"off": {phrases not to use}, "cues": {phrase: [your
+    English cues, instead of the model's]}} (see meme_cues.py)."""
+    edits = _load()["bot_memes"]
+    return {"off": set(edits["off"]), "cues": {p: list(c) for p, c in edits["cues"].items()}}
+
+
+def set_meme_off(phrase, off=True):
+    """Stop using one of the bot's memes when translating (off=False: use it again)."""
+    data = _copy()
+    gone = set(data["bot_memes"]["off"])
+    gone = gone | {phrase} if off else gone - {phrase}
+    if gone != set(data["bot_memes"]["off"]):
+        data["bot_memes"]["off"] = sorted(gone)
+        _store(data)
+
+
+def set_meme_cues(phrase, cues):
+    """Use your own English cues for one of the bot's memes, written as meme_cues.py reads
+    them ("jungle gap", "{X} gave up?"); None goes back to the model's."""
+    data = _copy()
+    if cues is None:
+        data["bot_memes"]["cues"].pop(phrase, None)
+    else:
+        data["bot_memes"]["cues"][phrase] = [c.strip() for c in cues if c.strip()]
+    _store(data)
 
 
 def words(table):
@@ -413,10 +451,11 @@ def restore_entry(table, english):
 
 
 def reset():
-    """Back to the built-in tables, the default rarity and the default 玩梗程度 (what the
-    overlay remembers and the bot's folder stay)."""
+    """Back to the built-in tables, the default rarity, the default 玩梗程度 and the bot's
+    memes as the model wrote them (what the overlay remembers and the bot's folder stay)."""
     data = _copy()
-    data.update(rarity=None, words={}, removed={}, meme_level=None)
+    data.update(rarity=None, words={}, removed={}, meme_level=None,
+                bot_memes={"off": [], "cues": {}})
     _store(data)
 
 
