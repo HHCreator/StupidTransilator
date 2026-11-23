@@ -4,14 +4,18 @@
     python -m sbtranslator.server --port 9000
 
 Requests:
-    GET  /translate?text=Hello%20world&mode=stupid&rarity=0.8&check=1
-    POST /translate   with JSON {"text": "Hello world", "mode": "stupid", "rarity": 0.8, "check": true}
+    GET  /translate?text=Hello%20world&mode=stupid&rarity=0.8&check=1&memes=max
+    POST /translate   with JSON {"text": "Hello world", "mode": "stupid", "rarity": 0.8,
+                                 "check": true, "memes": "max"}
     GET  /modes
 
 Responses are JSON: {"text": ..., "mode": ..., "translation": ...} or {"error": ...}.
 Only "text" is required; mode defaults to "stupid" and rarity to the library default (the
 one set in the overlay's ⚙ window, or 0.8).
 check turns on proofreading by a local AI model (see check.py); it is off by default.
+memes is the 玩梗程度 for the memes MemeLearnerBot learned, in the stupid mode: none, some
+(one a sentence) or max (one a clause); 不用, 适量 and 尽量多 work too. It defaults to the
+one set in the overlay, or some (see bot_memes.py).
 
 Python's standard http.server does the HTTP work: ThreadingHTTPServer accepts connections
 and runs each request in its own thread, calling the do_GET / do_POST / do_OPTIONS method
@@ -24,6 +28,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import MODES, settings, translate
+from .bot_memes import LEVELS
 
 # 127.0.0.1 means only programs on this computer can connect
 DEFAULT_HOST = "127.0.0.1"
@@ -48,8 +53,8 @@ class Handler(BaseHTTPRequestHandler):
     def _translate(self, params):
         """Translate params["text"] and answer with the result, for both GET and POST.
 
-        Status codes: 400 for bad input (no text, unknown mode, rarity not a number) and
-        502 when the online translator can't be reached.
+        Status codes: 400 for bad input (no text, unknown mode or 玩梗程度, rarity not a
+        number) and 502 when the online translator can't be reached.
         """
         text = params.get("text")
         if not text:
@@ -62,7 +67,8 @@ class Handler(BaseHTTPRequestHandler):
             rarity = None if rarity in (None, "") else float(rarity)
             # check arrives as true/false in JSON, or as text ("1", "true") in a URL
             check = str(params.get("check", "")).lower() in ("1", "true", "yes")
-            translation = translate(text, mode=mode, rarity=rarity, check=check)
+            memes = params.get("memes") or None
+            translation = translate(text, mode=mode, rarity=rarity, check=check, memes=memes)
         except ValueError as error:
             return self._send(400, {"error": str(error)})
         except Exception as error:
@@ -74,10 +80,12 @@ class Handler(BaseHTTPRequestHandler):
         self._send(204, {})
 
     def do_GET(self):
-        """GET /modes lists the modes; GET /translate?text=... translates."""
+        """GET /modes lists the modes (and the 玩梗程度 choices); GET /translate?text=...
+        translates."""
         url = urllib.parse.urlparse(self.path)
         if url.path == "/modes":
-            return self._send(200, {"modes": list(MODES), "default_rarity": settings.rarity()})
+            return self._send(200, {"modes": list(MODES), "default_rarity": settings.rarity(),
+                                    "memes": list(LEVELS), "default_memes": settings.meme_level()})
         if url.path == "/translate":
             # parse_qs gives lists ({"text": ["Hello"]}), keep the first value of each
             params = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
@@ -85,7 +93,7 @@ class Handler(BaseHTTPRequestHandler):
         self._send(404, {"error": "Not found. Use /translate or /modes"})
 
     def do_POST(self):
-        """POST /translate with a JSON body {"text": ..., "mode": ..., "rarity": ...}."""
+        """POST /translate with a JSON body {"text": ..., "mode": ..., "rarity": ..., ...}."""
         if urllib.parse.urlparse(self.path).path != "/translate":
             return self._send(404, {"error": "Not found. Use /translate"})
         try:

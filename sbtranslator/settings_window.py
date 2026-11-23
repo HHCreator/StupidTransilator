@@ -1,17 +1,22 @@
-"""The overlay's ⚙ window: your own word table entries, the rarity, importing and exporting
-your settings, and the desktop shortcut.
+"""The overlay's ⚙ window: your own word table entries, the rarity and the 玩梗程度, the
+meme bot's memes, importing and exporting your settings, and the desktop shortcut.
 
 Every change is saved at once (settings.py keeps it in a file outside the program folder)
 and used from the next translation on, so nobody has to edit the data files by hand:
 
     稀有度       the 逐词 mode's slider: the same variable as the overlay's slider, remembered
+    玩梗程度     how many of the meme bot's memes a Stupid sentence gets: the same variable as
+                 the overlay's 梗 switch
     词表         one table at a time (梗和名字, 日常意思, 缩写, 短语, 外号). Pick a row to change
                  or delete it, or type a new English word and its Chinese and press Enter
+    机器人的梗   the memes MemeLearnerBot learned: their English cues to change, memes to turn
+                 off, and the bot's folder (memes_page.py)
     buttons      导入设置… / 导出设置… (a .json file; an old data/*.json table imports too),
                  恢复默认, and 在桌面放快捷方式 (shortcut.py, Windows)
 
 The overlay opens it with Overlay.open_settings(), also from a stupid word's menu
-("加进我的词表…"), which calls prefill() with that word and its chosen meaning.
+("加进我的词表…"), which calls prefill() with that word and its chosen meaning, and from a
+meme's menu, which calls show_meme().
 """
 
 import os
@@ -22,6 +27,8 @@ from tkinter import font as tkfont
 
 from . import settings, shortcut
 from . import translator as t
+from .bot_memes import LEVEL_NAMES
+from .memes_page import BotMemesPage
 from .overlay import ACCENT, ACCENT_HOVER, BG, ERROR, FG, MUTED, PANEL, TITLE
 
 # Each table's button, what it does, and the heading of its second column
@@ -36,6 +43,8 @@ TABLE_INFO = {
     "nicknames": ("外号", "选手名换成中文外号（Stupid 和中文模式）：zywoo → 载物", "外号"),
 }
 YOURS = (settings.MINE, settings.CHANGED)  # the labels of rows that are your own entries
+BOT_PAGE = "bot"  # the 机器人的梗 button, after the tables' buttons
+WORDS_HINT = "点一行可以改它或删掉；新词写在上面两格里，按回车。改了马上生效。"
 
 
 class SettingsWindow:
@@ -104,25 +113,45 @@ class SettingsWindow:
                  fg=MUTED, font=(self.font, 8)).pack(side="left")
         self.show_rarity()
 
-        # Which table
+        # 玩梗程度: the overlay's own variable, so both switches move together
+        row = tk.Frame(body, bg=BG)
+        row.pack(fill="x", pady=(8, 0))
+        tk.Label(row, text="玩梗程度", bg=BG, fg=FG, font=(self.font, 10, "bold")).pack(side="left")
+        for n, level in enumerate(settings.MEME_LEVELS):
+            tk.Radiobutton(
+                row, text=LEVEL_NAMES[level], value=level, variable=self.overlay.meme_level,
+                indicatoron=False, bd=0, relief="flat", cursor="hand2", takefocus=False,
+                bg=PANEL, fg=FG, activebackground=ACCENT, activeforeground=BG,
+                selectcolor=ACCENT, font=(self.font, 9), padx=8, pady=2,
+            ).pack(side="left", padx=(10 if n == 0 else 3, 0))
+        tk.Label(row, text="只管 Stupid 模式：适量每句 1 个梗，尽量多每个分句 1 个", bg=BG,
+                 fg=MUTED, font=(self.font, 8)).pack(side="left", padx=(8, 0))
+
+        # Which table, or the bot's memes
         tk.Label(body, text="词表", bg=BG, fg=FG, anchor="w",
                  font=(self.font, 10, "bold")).pack(fill="x", pady=(14, 4))
         tables = tk.Frame(body, bg=BG)
         tables.pack(fill="x")
-        for column, table in enumerate(settings.TABLES):
+        labels = [(table, TABLE_INFO[table][0]) for table in settings.TABLES]
+        for column, (table, label) in enumerate(labels + [(BOT_PAGE, "机器人的梗")]):
             tables.columnconfigure(column, weight=1, uniform="table")
             tk.Radiobutton(
-                tables, text=TABLE_INFO[table][0], value=table, variable=self.table,
+                tables, text=label, value=table, variable=self.table,
                 command=self.show_table, indicatoron=False, bd=0, relief="flat",
                 cursor="hand2", takefocus=False, bg=PANEL, fg=FG, activebackground=ACCENT,
                 activeforeground=BG, selectcolor=ACCENT, font=(self.font, 10), padx=6, pady=4,
             ).grid(row=0, column=column, sticky="ew", padx=(0 if column == 0 else 3, 0))
-        self.about = tk.Label(body, bg=BG, fg=MUTED, anchor="w", justify="left",
+        # One page shows at a time: a word table's, or the bot's memes (show_table())
+        pages = tk.Frame(body, bg=BG)
+        pages.pack(fill="both", expand=True)
+        self.memes_page = BotMemesPage(self, pages)
+        self.words_page = words = tk.Frame(pages, bg=BG)
+        self.about = tk.Label(words, bg=BG, fg=MUTED, anchor="w", justify="left",
                               wraplength=520, font=(self.font, 9))
         self.about.pack(fill="x", pady=(6, 6))
 
         # Search, and how many rows
-        row = tk.Frame(body, bg=BG)
+        row = tk.Frame(words, bg=BG)
         row.pack(fill="x")
         tk.Label(row, text="搜索", bg=BG, fg=MUTED, font=(self.font, 9)).pack(side="left")
         self._entry(row, self.search, width=18).pack(side="left", padx=(6, 0))
@@ -130,7 +159,7 @@ class SettingsWindow:
         self.count.pack(side="right")
 
         # The table
-        frame = tk.Frame(body, bg=PANEL)
+        frame = tk.Frame(words, bg=PANEL)
         frame.pack(fill="both", expand=True, pady=(6, 0))
         self.tree = ttk.Treeview(frame, columns=("english", "chinese", "source"),
                                  show="headings", selectmode="browse", style="SB.Treeview",
@@ -149,7 +178,7 @@ class SettingsWindow:
         self.tree.bind("<Delete>", lambda e: self.delete())
 
         # The entry being added or changed
-        row = tk.Frame(body, bg=BG)
+        row = tk.Frame(words, bg=BG)
         row.pack(fill="x", pady=(8, 0))
         self.english_box = self._entry(row, self.english, width=16)
         self.english_box.pack(side="left")
@@ -165,7 +194,7 @@ class SettingsWindow:
         self.status = tk.Label(body, bg=BG, fg=MUTED, anchor="w", justify="left",
                                wraplength=520, font=(self.font, 9))
         self.status.pack(fill="x", pady=(6, 0))
-        self._say("点一行可以改它或删掉；新词写在上面两格里，按回车。改了马上生效。")
+        self._say(WORDS_HINT)
 
         # Import, export, reset, and the desktop shortcut
         row = tk.Frame(body, bg=BG)
@@ -226,7 +255,18 @@ class SettingsWindow:
         self.rarity_label.config(text=f"{self.overlay.rarity.get():.1f}")
 
     def show_table(self, select=None):
-        """Show the chosen table (with the row for select, an English word, picked)."""
+        """Show the chosen table (with the row for select, an English word, picked), or the
+        bot's memes."""
+        if self.table.get() == BOT_PAGE:
+            self.words_page.pack_forget()
+            self.memes_page.frame.pack(fill="both", expand=True)
+            self.memes_page.refresh()
+            self._say("改了马上生效：下一句翻译就用上。")
+            return
+        if not self.words_page.winfo_manager():  # coming back from the bot's memes
+            self.memes_page.frame.pack_forget()
+            self.words_page.pack(fill="both", expand=True)
+            self._say(WORDS_HINT)
         label, about, heading = TABLE_INFO[self.table.get()]
         self.about.config(text=about)
         self.tree.heading("chinese", text=heading)
@@ -275,6 +315,13 @@ class SettingsWindow:
 
     def _say(self, text, error=False):
         self.status.config(text=text, fg=ERROR if error else MUTED)
+
+    def show_meme(self, phrase):
+        """Show one of the bot's memes on the 机器人的梗 page, to change or turn off."""
+        self.table.set(BOT_PAGE)
+        self.show_table()
+        self.memes_page.select(phrase)
+        self.show()
 
     def prefill(self, english, chinese):
         """Show english with chinese in the boxes, ready to save, in the table that has the
@@ -336,19 +383,30 @@ class SettingsWindow:
         self._say(f"删了：{english} → {chinese}。")
 
     def reset(self):
-        """Undo all your entries, changes and deletions, and the rarity."""
+        """Undo all your entries, changes and deletions, the rarity, the 玩梗程度 and your
+        changes to the bot's memes."""
         if not messagebox.askyesno(
                 TITLE, "全部恢复默认吗？你加的、改的、删的词条都会撤销，稀有度回到 "
-                f"{t.TARGET_RARITY}。\n\n想留个备份，先点「导出设置…」。", parent=self.window):
+                f"{t.TARGET_RARITY}，玩梗程度回到{LEVEL_NAMES[settings.DEFAULT_MEME_LEVEL]}，"
+                "关掉的梗和你改的说法也恢复成模型写的。\n\n想留个备份，先点「导出设置…」。",
+                parent=self.window):
             return
         try:
             settings.reset()
         except OSError as error:
             return self._say(f"设置存不下：{error}", error=True)
-        self.overlay.rarity.set(settings.rarity())
-        self._fill()
-        self._on_typing()
+        self._reload()
         self._say("恢复默认了。")
+
+    def _reload(self):
+        """Show the settings as they are saved now (after a reset or an import)."""
+        self.overlay.rarity.set(settings.rarity())
+        self.overlay.meme_level.set(settings.meme_level())
+        if self.table.get() == BOT_PAGE:
+            self.memes_page.refresh()
+        else:
+            self._fill()
+            self._on_typing()
 
     # -- import, export, shortcut ---------------------------------------------------------
 
@@ -362,14 +420,16 @@ class SettingsWindow:
             found = settings.import_file(path)
         except (OSError, ValueError) as error:
             return self._say(f"导入不了：{error}", error=True)
-        self.overlay.rarity.set(settings.rarity())
-        self._fill()
-        self._on_typing()
+        self._reload()
         parts = [f"{found['words']} 个词条"]
         if found["removed"]:
             parts.append(f"删掉 {found['removed']} 个内置词条")
         if found["rarity"] is not None:
             parts.append(f"稀有度 {found['rarity']}")
+        if found["meme_level"]:
+            parts.append(f"玩梗程度{LEVEL_NAMES[found['meme_level']]}")
+        if found["memes"]:
+            parts.append(f"{found['memes']} 个梗的改动")
         skipped = f"（{found['skipped']} 个不合格式，没导入）" if found["skipped"] else ""
         self._say(f"导入了：{'，'.join(parts)}{skipped}。同一个词以导入的为准。")
 

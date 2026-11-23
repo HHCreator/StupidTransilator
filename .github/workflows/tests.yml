@@ -1,0 +1,42 @@
+# Runs the offline tests (tests/) on every push to main and every pull request into it. They
+# need no internet: Google, DeepSeek, Ollama and GitHub are faked (tests/helpers.py). Windows
+# runs them like the exe does; Linux runs them on the oldest Python the package supports, with
+# a virtual screen so the window tests run too.
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            python: "3.12"
+          - os: ubuntu-22.04  # the newest Ubuntu GitHub still has Python 3.8 for
+            python: "3.8"
+    runs-on: ${{ matrix.os }}
+    env:
+      PYTHONUTF8: "1"  # Chinese in the output, also on Windows
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Offline tests
+        if: runner.os == 'Windows'
+        run: python -m unittest discover tests -v
+      - name: Offline tests, with a virtual screen for the windows
+        if: runner.os == 'Linux'
+        run: |
+          command -v xvfb-run || (sudo apt-get update && sudo apt-get install -y xvfb)
+          xvfb-run -a python -m unittest discover tests -v

@@ -10,6 +10,7 @@
     sbtranslator.translate("Long time no see", mode="wordy", rarity=1.5)       # stupidest
     sbtranslator.translate("Long time no see", check=True)                     # AI-checked
     sbtranslator.translate("frozen你这个major打得跟teses一样", mode="chinese")  # Chinese in
+    sbtranslator.translate("jungle gap", memes="max")  # with the meme bot's memes (玩梗程度)
     sbtranslator.options("A long sentence ...")    # several versions + other meanings per word
     sbtranslator.suggest_mode("今天天气很好", "stupid")  # ("zh", "chinese"): wrong mode
 
@@ -25,10 +26,15 @@ which function in translator.py does the work for each mode.
         inject.py       the stupid mode: normal translation with stupid words injected
         rules.py        its stupid words that need no table (default meanings, near-synonyms)
         chinese.py      the stupid mode for Chinese input: its English words made stupid
+        bot_memes.py    the memes MemeLearnerBot learned, read from the bot's files
+        meme_cues.py    each of those memes' English cues, written by a model
+        meme_pick.py    the memes that fit a sentence, for the stupid mode
+        meme_model.py   the model asked about memes (DeepSeek flash, else qwen3:14b)
         learn.py        the Wikipedia crawler that learns memes and names
         server.py       the HTTP API for apps in other languages
         overlay.py      the always-on-top window (and the Windows exe)
         settings_window.py  its ⚙ window: your word table entries, rarity, import/export
+        memes_page.py   the ⚙ window's page of the bot's memes
         settings.py     your own settings, saved outside the program folder
         shortcut.py     the desktop shortcut (Windows)
         check.py        proofreading by a local AI model (DeepSeek through Ollama)
@@ -55,7 +61,7 @@ MODES = ("stupid", "chinese", "wordy", "plain", "proper", "classical")
 ENGLISH_MODES = ("stupid", "wordy", "plain", "proper", "classical")  # the others take Chinese
 
 
-def translate(text, mode="stupid", rarity=None, check=False):
+def translate(text, mode="stupid", rarity=None, check=False, memes=None):
     """Translate English text to Chinese.
 
     mode: "stupid" (a normal translation with stupid words injected, the default),
@@ -68,20 +74,25 @@ def translate(text, mode="stupid", rarity=None, check=False):
     check: let a local AI model help (see check.py; needs Ollama with the model downloaded).
     In "stupid" mode it writes the sentence around the stupid words; in "wordy" and
     "plain" it picks the best of several versions and smooths it a little.
+    memes: the 玩梗程度 for the memes MemeLearnerBot learned, in the stupid mode: "none",
+    "some" (one a sentence) or "max" (one a clause). None means the one set in the overlay's
+    ⚙ window, or "some" (see bot_memes.py).
 
-    Needs an internet connection. Raises ValueError for an unknown mode and RuntimeError
-    when the online translator can't be reached.
+    Needs an internet connection. Raises ValueError for an unknown mode or 玩梗程度 and
+    RuntimeError when the online translator can't be reached.
     """
     text = clean_text(text)  # ｌｏｌ -> lol, don’t -> don't
     settings.refresh()  # word tables changed in the ⚙ window, maybe by another program
     rarity = settings.rarity() if rarity is None else rarity
+    from .bot_memes import level_of
+    memes = level_of(memes)  # an unknown 玩梗程度 is a mistake, whatever the mode
     # Each mode is one function (check.py wraps them when check=True)
     if mode == "stupid":
         if check:
             from .check import checked_injected
-            return checked_injected(text)
+            return checked_injected(text, memes=memes)
         from .inject import translate_injected
-        return translate_injected(text)
+        return translate_injected(text, memes=memes)
     if mode == "chinese":
         from .chinese import translate_chinese
         return translate_chinese(text, check=check)
@@ -99,13 +110,14 @@ def translate(text, mode="stupid", rarity=None, check=False):
     raise ValueError(f"Unknown mode {mode!r}, expected one of {', '.join(MODES)}")
 
 
-def options(text, mode="stupid", rarity=None, check=False, versions=4):
+def options(text, mode="stupid", rarity=None, check=False, versions=4, memes=None):
     """Translate and offer choices, like Google Translate's alternatives. Returns a dict:
 
         translation  the translation (as translate() would give it)
         versions     up to `versions` different whole sentences, the translation first
         words        stupid mode only: [{"english", "chosen", "options"}, ...], each stupid
-                     word with the other stupid meanings it can switch to (see adjust())
+                     word with the other stupid meanings it can switch to (see adjust());
+                     a meme of the bot's has "meme": True, and other memes as options
         proper       the normal translation, to pass to adjust()
         checked      True when the local model was asked (check=True)
         check_error  why the local model couldn't be asked, or None
@@ -113,23 +125,25 @@ def options(text, mode="stupid", rarity=None, check=False, versions=4):
         suggested_mode
                      the mode made for that language when it isn't this one, or None
                      (both from suggest_mode())
+        meme_note    stupid mode only: why a meme that fit was left out, or None
 
     The stupid and wordy modes are random, so the versions really differ; plain, proper
-    and classical give one version.
+    and classical give one version. memes is the 玩梗程度, as in translate().
     """
     text = clean_text(text)
     settings.refresh()
     rarity = settings.rarity() if rarity is None else rarity
-    found = _options(text, mode, rarity, check, versions)
+    from .bot_memes import level_of
+    found = _options(text, mode, rarity, check, versions, level_of(memes))
     found["language"], found["suggested_mode"] = suggest_mode(text, mode)
     return found
 
 
-def _options(text, mode, rarity, check, versions):
+def _options(text, mode, rarity, check, versions, memes):
     """What options() returns, without the language."""
     if mode == "stupid":
         from .inject import options as stupid_options
-        return stupid_options(text, versions=versions, check=check)
+        return stupid_options(text, versions=versions, check=check, memes=memes)
     if mode == "chinese":
         from .chinese import options as chinese_options
         return chinese_options(text, versions=versions, check=check)

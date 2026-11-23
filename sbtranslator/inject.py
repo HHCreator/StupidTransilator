@@ -7,6 +7,8 @@ Word-by-word translation reads like gibberish. The memes Hao likes read like flu
 that means nothing: only a few words are stupid, everything around them is normal. So:
 
     1. Translate the sentence normally (Google), to know what each word means here.
+       Meanwhile, find the meme bot's memes that fit the sentence (meme_pick.py), as many
+       as the 玩梗程度 allows: Chovy gave up -> 超威同意了. Their words get no stupid word.
     2. Pick the words to make stupid, and their stupid Chinese (stupid_word()):
          phrases from stream chat (phrases.json, longest first)   zywoo play -> 载物玩耍
          names, memes and plurals                                  teses -> 滔搏们 / 一些滔搏
@@ -22,8 +24,9 @@ that means nothing: only a few words are stupid, everything around them is norma
          -ing words read as their verb                             let's fucking go -> 让我们草着走
          two words read literally                                  holy shit -> 圣粪便
          a near-synonym for a few nouns and adjectives             home -> house -> 房子
-    3. Write the stupid Chinese into the English sentence inside 【】 ("your 【主要】 champion")
-       and translate the whole sentence. Google builds fluent Chinese around them.
+    3. Write the memes and the stupid Chinese into the English sentence inside 【】 ("your
+       【主要】 champion") and translate the whole sentence. Google builds fluent Chinese
+       around them.
     4. Remove the 【】 and put back any injected word Google changed (滔滔搏们 -> 滔搏们). If
        Google garbled the sentence, swap the stupid words into the normal translation instead.
        Spell curses the way people type them (他妈的 -> 踏马).
@@ -42,7 +45,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 from difflib import SequenceMatcher
 
-from . import rules, settings
+from . import meme_pick, rules, settings
 from . import translator as t
 from .phrases import nicknames
 
@@ -230,25 +233,40 @@ def _repair(output, wanted):
     return output
 
 
-def inject(text, wrap=("【", "】"), forced=None, proper=None, use_rules=True):
+TOKEN = re.compile(f"[{t.LETTERS}0-9']+|[^{t.LETTERS}0-9'\\s]|\\s+")
+
+
+def tokenize(text):
+    """(tokens, words): text split into words, punctuation and spaces, and the indexes of
+    the tokens that are words. Every part of the stupid mode splits a sentence this way."""
+    tokens = TOKEN.findall(text)
+    return tokens, [i for i, tok in enumerate(tokens) if re.match(f"[{t.LETTERS}0-9]", tok)]
+
+
+def inject(text, wrap=("【", "】"), forced=None, proper=None, use_rules=True, meme_spans=()):
     """Do steps 1 to 3; return (proper, injected English, {English: stupid Chinese}).
 
     forced, when given, decides the stupid words instead of the rules: {English word or
     phrase (lowercase): stupid Chinese}, and a word that isn't in it stays normal. That is
     how a person picks other options (see options() and adjust()). proper can be passed in
     to save asking Google for it again. With use_rules=False only the tables are used, not
-    rules.py.
+    rules.py. meme_spans are the bot's memes to put in first, [(first token, last token,
+    English, Chinese)], as meme_pick.py finds them in the tokens of tokenize(text).
     """
     if proper is None:
         proper = t.translate(text)
-    tokens = re.findall(f"[{t.LETTERS}0-9']+|[^{t.LETTERS}0-9'\\s]|\\s+", text)
-    words = [i for i, tok in enumerate(tokens) if re.match(f"[{t.LETTERS}0-9]", tok)]
+    tokens, words = tokenize(text)
     # Each choice replaces tokens first..last: {first: (last, key, Chinese, before, after)}
-    chosen, by_word = {}, {}
+    chosen = {first: (last, key, zh, "", "") for first, last, key, zh in meme_spans}
+    memes = {j for first, last, *_ in meme_spans for j in range(first, last + 1)}
+    by_word = {}
     known_phrases = phrases()
     longest = max((len(p.split()) for p in known_phrases), default=0)
     i = 0
     while i < len(tokens):
+        if i in memes:
+            i += 1  # a meme's words get no stupid word
+            continue
         # A phrase from stream chat, longest first: "zywoo play" -> 载物玩耍
         if i in words and longest > 1:
             found = None
@@ -256,7 +274,8 @@ def inject(text, wrap=("【", "】"), forced=None, proper=None, use_rules=True):
             for n in range(min(longest, len(words) - position), 1, -1):
                 span = words[position:position + n]
                 key = " ".join(tokens[j].lower() for j in span)
-                if key in known_phrases and (forced is None or forced.get(key)):
+                if (key in known_phrases and (forced is None or forced.get(key))
+                        and not memes & set(range(span[0], span[-1] + 1))):
                     found = (span[-1], key)
                     break
             if found:
@@ -301,14 +320,34 @@ def inject(text, wrap=("【", "】"), forced=None, proper=None, use_rules=True):
     return proper, "".join(out), picks
 
 
-def translate_injected(text, details=False, forced=None, proper=None, use_rules=True):
+def _meme_spans(text, forced, proper, memes):
+    """Step 1: (proper, the memes for inject(), a note about memes left out or None). With
+    forced, the memes in it (a person's choices); else the ones meme_pick.py finds at the
+    玩梗程度 memes, while Google translates the sentence."""
+    tokens, words = tokenize(text)
+    if forced is not None:
+        return (t.translate(text) if proper is None else proper,
+                meme_pick.forced(tokens, words, forced), None)
+    planning = meme_pick.start(text, tokens, words, memes) if memes != "none" else None
+    if proper is None:
+        proper = t.translate(text)  # while the model, if it is asked, thinks
+    spans, note = planning.result() if planning else ([], None)
+    return proper, spans, note
+
+
+def translate_injected(text, details=False, forced=None, proper=None, use_rules=True,
+                       memes="none"):
     """The stupid translation of text (see the top of this file).
 
     With details=True, returns a dict with the proper translation, the injected English,
-    the stupid words and the ones missing from the result, for check.py. forced, proper and
-    use_rules are passed on to inject().
+    the stupid words, the ones missing from the result and the memes among them, for
+    check.py and options(). forced, proper and use_rules are passed on to inject(). memes is
+    the 玩梗程度 for the meme bot's memes: "none", "some" or "max" (meme_pick.py); with
+    forced, the memes in forced are used instead.
     """
-    proper, injected, picks = inject(text, forced=forced, proper=proper, use_rules=use_rules)
+    proper, spans, meme_note = _meme_spans(text, forced, proper, memes)
+    proper, injected, picks = inject(text, forced=forced, proper=proper, use_rules=use_rules,
+                                     meme_spans=spans)
     wanted = list(dict.fromkeys(picks.values()))
     result = _repair(t.translate(injected), wanted) if picks else proper
     missing = [w for w in wanted if w not in result]
@@ -331,7 +370,10 @@ def translate_injected(text, details=False, forced=None, proper=None, use_rules=
         if garbled and forced is None:
             # Google garbles some near-synonyms (患病伊利亚 -> 脓伊利亚): leave those normal
             kept = {key: zh for key, zh in picks.items() if key not in garbled}
-            return translate_injected(text, details, kept, proper, use_rules)
+            found = translate_injected(text, details, kept, proper, use_rules)
+            if details:
+                found["meme_note"] = meme_note
+            return found
     if use_rules and _defects(result, wanted, text, proper):
         # Still garbled: the normal sentence with the stupid words swapped in may read better
         swapped = _swapped(proper, picks)
@@ -347,7 +389,9 @@ def translate_injected(text, details=False, forced=None, proper=None, use_rules=
         missing = [rules.spell(w) for w in missing]
     if details:
         return {"english": text, "proper": proper, "injected": injected, "words": picks,
-                "result": result, "missing": missing}
+                "result": result, "missing": missing,
+                "memes": [key for first, last, key, zh in spans if key in picks],
+                "meme_note": meme_note}
     return result
 
 
@@ -390,18 +434,24 @@ def word_options(english, chosen, proper):
     return found
 
 
-def options(text, versions=VERSIONS, check=False):
+def options(text, versions=VERSIONS, check=False, memes="none"):
     """Translate text and offer choices. Returns a dict:
 
         translation  the stupid translation (written by the local model with check=True)
-        versions     up to `versions` different whole sentences, translation first
-        words        [{"english": word, "chosen": stupid Chinese, "options": [...]}, ...]
+        versions     up to `versions` different whole sentences, translation first; with a
+                     meme in it, the second one has no memes
+        words        [{"english": word, "chosen": stupid Chinese, "options": [...]}, ...];
+                     a meme has "meme": True, and other memes or forms of it as options
         proper       the normal translation (pass it to adjust() to save a request)
         checked      True when the local model was asked (check=True, see check.py)
         check_error  why the local model couldn't be asked, or None
+        meme_note    why a meme that fit was left out (no model to confirm it), or None
+
+    memes is the 玩梗程度, as in translate_injected().
     """
-    details = translate_injected(text, details=True)
+    details = translate_injected(text, details=True, memes=memes)
     proper, picks = details["proper"], details["words"]
+    meme_keys = set(details["memes"])
     translation = details["result"]
     checked, check_error = False, None
     if check and picks:
@@ -411,11 +461,25 @@ def options(text, versions=VERSIONS, check=False):
             checked = True
         except CheckUnavailable as error:
             check_error = str(error)  # no local model: keep Google's sentence
+    tokens, words = tokenize(text)
+    choices = {w: meme_pick.options(tokens, words, w, picks[w]) for w in meme_keys}
+    others = [w for w in picks if w not in meme_keys]
     with ThreadPoolExecutor(max_workers=4) as pool:
-        choices = dict(zip(picks, pool.map(lambda w: word_options(w, picks[w], proper), picks)))
+        choices.update(zip(others, pool.map(lambda w: word_options(w, picks[w], proper),
+                                            others)))
+    if meme_keys and versions > 1:
+        # The same stupid words without the memes, as the second version
+        plain = translate_injected(text, forced={w: zh for w, zh in picks.items()
+                                                 if w not in meme_keys}, proper=proper)
+        if plain != translation:
+            found_first = [translation, plain]
+        else:
+            found_first = [translation]
+    else:
+        found_first = [translation]
     # Other versions: each one switches some of the words to another of their options, and
     # words with near-synonyms to the next one (sick: 患病, then 不适, 恶心 ...)
-    found, tried = [translation], [picks]
+    found, tried = found_first, [picks]
     for attempt in range(versions * 3):
         if len(found) >= versions:
             break
@@ -428,9 +492,11 @@ def options(text, versions=VERSIONS, check=False):
         sentence = translate_injected(text, forced=variant, proper=proper)
         if sentence not in found:
             found.append(sentence)
-    words = [{"english": w, "chosen": picks[w], "options": choices[w]} for w in picks]
+    words = [dict({"english": w, "chosen": picks[w], "options": choices[w]},
+                  **({"meme": True} if w in meme_keys else {})) for w in picks]
     return {"translation": translation, "versions": found, "words": words, "proper": proper,
-            "checked": checked, "check_error": check_error}
+            "checked": checked, "check_error": check_error,
+            "meme_note": details["meme_note"]}
 
 
 def adjust(text, chosen, proper=None):

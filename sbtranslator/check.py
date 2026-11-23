@@ -251,12 +251,13 @@ def _translates(text, details, required):
     return sum(c in known for c in characters) >= SHARED_CHARACTERS * len(characters)
 
 
-def checked_injected(text, model=MODEL):
-    """The stupid translation, with the sentence written by the local model.
+def checked_injected(text, model=MODEL, memes="none"):
+    """The stupid translation, with the sentence written by the local model. memes is the
+    玩梗程度 (see inject.translate_injected()): the memes are required words too.
 
     Falls back to Google's version, with a warning, if the model isn't available.
     """
-    details = translate_injected(text, details=True)
+    details = translate_injected(text, details=True, memes=memes)
     if not details["words"]:
         return details["result"]  # nothing stupid to place: the normal translation
     try:

@@ -1,0 +1,114 @@
+# Teams and players a meme's {X} can be (meme_pick.py): Chovy gave up -> 超威同意了. One a line,
+# as people type them (case doesn't matter). Names that aren't English words (Faker, T1, TES)
+# are found without this list when they are capitalized or have a digit; it matters most for
+# names that are also English words (Canyon, Knight, Gen) and names typed in lowercase.
+# Leave out names that are everyday words in chat (Team WE: "we gave up" isn't about them).
+# The meme bot's nickname table (memelearner/data/nicknames.txt) counts too. Add more as you
+# meet them.
+
+# League of Legends teams
+t1
+gen
+geng
+hle
+kt
+dk
+drx
+ns
+kdf
+blg
+tes
+jdg
+lng
+wbg
+ig
+edg
+rng
+fpx
+omg
+lgd
+tt
+al
+nip
+g2
+fnc
+vit
+kc
+c9
+tl
+100t
+psg
+cfo
+gam
+
+# League of Legends players
+faker
+chovy
+canyon
+ruler
+peyz
+kiin
+doran
+oner
+gumayusi
+guma
+keria
+zeus
+smash
+bin
+knight
+elk
+xun
+wei
+rookie
+theshy
+shy
+jackeylove
+meiko
+uzi
+xiaohu
+scout
+369
+kanavi
+tian
+zika
+tarzan
+viper
+peanut
+deft
+showmaker
+bdd
+lehends
+aiming
+beryl
+caps
+jankos
+rekkles
+mikyx
+hans
+brokenblade
+yike
+ning
+jiejie
+creme
+crisp
+leyan
+shanks
+flandre
+zeka
+hylissang
+
+# Valorant teams and players
+prx
+fnatic
+sen
+edg
+kangkang
+zmjjkk
+chichoo
+smoggy
+haodong
+tenz
+aspas
+f0rsaken
+derke
