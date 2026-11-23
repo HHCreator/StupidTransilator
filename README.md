@@ -9,6 +9,7 @@ Needs Python 3 and an internet connection (it calls Google Translate, and Bing T
 
 ```
 py translator.py "Hello world"            # stupid: a normal sentence with stupid words injected
+py translator.py --memes max "jungle gap lol"  # with as many of the meme bot's memes as fit (none, some = default, max)
 py translator.py --chinese "frozen你这个major打得跟teses一样"  # Chinese in, stupid Chinese out
 py translator.py --wordy "Hello world"    # stupid word by word, wrong-but-real meanings
 py translator.py --wordy --rarity 1.5 "Hi"  # same, rarer on average (0 = natural, 3 = obscure, default 0.8 or the overlay's ⚙ setting)
@@ -70,6 +71,9 @@ they use Google's own dictionary and its English thesaurus:
 
 A table entry wins over the rules, so add one when a rule picks something unfunny.
 
+The stupid mode also uses the memes the [meme bot](#the-meme-bots-memes-玩梗程度) learned
+from Bilibili danmu, when the English says the same thing: jungle gap -> 野距.
+
 Google sometimes rewrites an injected word, usually a verb (clutch, play). With `--check` the
 local AI model writes the sentence instead and must use every stupid word word for word; the
 program checks and asks again (see below).
@@ -123,6 +127,11 @@ programs often flag that as a virus. Controls:
 - Drag the title bar to move it, ✕ to quit
 - The — button in the title bar minimizes it to the taskbar; click the taskbar button to bring it back
 - After translating, “其他版本” lists other versions of the sentence (click one to use it), and in the stupid mode “点蠢词换个意思” has a button for each stupid word: pick another wrong meaning, or 正常翻译 to translate that word normally, and the sentence is rebuilt
+- “梗：适量 ▾” next to AI 校对 is the 玩梗程度 of the Stupid mode: 不用 (no memes), 适量 (one
+  of the meme bot's memes a sentence, the default) or 尽量多 (one a clause, three at most).
+  A meme in the result has a blue button among the stupid words: switch to another meme or
+  form of it, 正常翻译 to leave it out, or “改「…」的说法或关掉它…” to open it in ⚙. The
+  status says 梗模型超时 when the model was too slow for a meme that needed it
 - Ctrl+Alt+T hides and shows it from any app (if another app already uses that key, the hint
   in the title bar disappears and the hotkey is off)
 - ⚙ in the title bar opens the settings (below); a stupid word's menu also has “加进我的词表…”,
@@ -146,8 +155,16 @@ files, and every change is used from the next translation on (no restart):
   恢复内置; a deleted one comes back with 恢复默认 (which undoes all your changes).
 - **稀有度 (rarity)**: the 逐词 mode's slider, the same one as in the main window. It is
   remembered, and the command line and the HTTP server use it too when no rarity is given.
+- **玩梗程度**: the same switch as “梗：适量 ▾” in the main window, remembered the same way.
+- **机器人的梗**: the meme bot's memes, next to the word tables. It says how many there are
+  and where they come from; the exe can't find the bot's folder by itself, so point it there
+  once with 选机器人的文件夹…. Each meme is listed with its English cues and its state (用,
+  骂人的, 你改的, 关掉了, 模型说不用, 还没写说法). Click one to see its meaning, change its
+  cues (`;` between them, `?` at the end of a cue the model must confirm, `{X}` for any player
+  or team), go back to the model's with 用回模型写的, or stop using it with 关掉.
 - **导入设置… / 导出设置…**: save your settings to a `.json` file to keep or give to a friend,
-  and add such a file to yours (the file's entries win). Old hand-edited tables import too:
+  and add such a file to yours (the file's entries win). The 玩梗程度 and your changes to the
+  bot's memes go with them; the bot's folder doesn't. Old hand-edited tables import too:
   `stupid_words.json`, or a flat `{English: Chinese}` file like `memes.json`, `phrases.json`
   or `nicknames.json`.
 - **在桌面放快捷方式**: puts `SBtranslator` on the desktop (Windows). From source it runs
@@ -220,12 +237,53 @@ Other wordy-mode rules: contractions are expanded first (can't -> can not), "the
 (Chinese has no articles), compound parts keep their natural meaning (firepower -> 火 + 力量),
 and words of 4 letters or fewer are never split (into stays 进入).
 
-## The meme bot
+## The meme bot's memes (玩梗程度)
 
-The meme bot, which reads Bilibili by itself for the newest gaming memes, has its own repo
-now: [MemeLearnerBot](https://github.com/HHCreator/MemeLearnerBot), so it is developed
-separately from the translator. Its README says how an app gets the memes it learned:
-`import memelearner`, its command line with `--json`, or its `memes.json` file.
+The meme bot reads Bilibili danmu by itself for the newest gaming memes, and each one is
+approved by hand in its report. It has its own repo,
+[MemeLearnerBot](https://github.com/HHCreator/MemeLearnerBot), and the translator reads what
+it learned, so the stupid mode can joke while it translates (一边玩梗一边翻译). A meme only
+goes in when the English says the same thing in the same tone, because a wrong meme breaks
+the meaning:
+
+```
+jungle gap                            ->  野距
+it's over, this is a skin game now    ->  已经结束了，现在这里是皮肤局
+T1 gave up lmao                       ->  t1同意了 lmao   (the model is asked first: the game, or a dragon?)
+```
+
+- **Where the memes come from** (`sbtranslator/bot_memes.py`): the bot's
+  `memelearner/data/memes.json` and `nicknames.txt`, from the first place that has them: the
+  bot's folder on this computer (chosen in ⚙, or `SBTRANSLATOR_BOT_FOLDER`, or a
+  `MemeLearnerBot` folder next to the translator's when it runs from source), a copy of them
+  from GitHub downloaded at most every 6 hours, or the copy the exe comes with. A meme
+  approved in the bot's report is used from the next sentence on, no copying by hand.
+- **English cues** (`sbtranslator/meme_cues.py`): a model writes a few for every meme ahead of
+  time (jungle gap, jg diff -> 野距). `{X}` is any player or team (Chovy gave up -> 超威同意了,
+  T1 gave up -> t1同意了). A cue ending in `?` only sometimes means the meme, so the model
+  is asked about the sentence first. Insulting memes are only used when the English insults
+  too, and memes English chat has nothing like (合影) aren't used. Cues for the memes the
+  program came with are in `sbtranslator/data/meme_cues.json`; new memes, and memes whose
+  meaning changed, get theirs written in the background into the settings folder.
+  `py -m sbtranslator.meme_cues` writes the missing ones now, `--show` lists them all, and ⚙ >
+  机器人的梗 changes them.
+- **Picking** (`sbtranslator/meme_pick.py`): the most specific cue wins, and equally
+  specific memes take turns. 适量 gives a sentence one meme, 尽量多 one a clause and three at
+  most, and there the model also finds memes without a cue (a player's praising nickname,
+  a reaction at the end). Memes are only used in the Stupid mode. The second of “其他版本”
+  is the same sentence without memes.
+- **The model** (`sbtranslator/meme_model.py`): DeepSeek's flash model when your key is in
+  the `DEEPSEEK_API_KEY` environment variable (the bot uses the same one; the translator
+  never saves or shows it), else `qwen3:14b` through Ollama. It runs while Google translates
+  and gets 3 seconds a sentence; when it is slower, or there is none, the sentence goes
+  without the memes that needed it, never with a wrong one. Its answers are remembered, so
+  chat that repeats itself costs nothing. `SBTRANSLATOR_MEME_MODEL` and
+  `SBTRANSLATOR_MEME_LOCAL_MODEL` choose other models.
+
+`--memes none|some|max` on the command line, `translate(text, memes="max")` in Python and
+`memes=max` over HTTP set the 玩梗程度 for one translation; without it they use the one set
+in the overlay (some until you change it). `py -m sbtranslator.bot_memes` says where the memes
+come from and how many there are.
 
 ## Proofreading with a local AI model
 
@@ -279,6 +337,7 @@ sbtranslator.translate("Hello world", mode="plain")                    # word by
 sbtranslator.translate("Hello world", mode="proper")                   # correct
 sbtranslator.translate("Long time no see", mode="classical")           # 文言文
 sbtranslator.translate("Long time no see", rarity=1.5)                 # stupider
+sbtranslator.translate("jungle gap lol", memes="max")                  # as many memes as fit
 sbtranslator.options("A long sentence ...")   # several versions, and other meanings per stupid word
 ```
 
@@ -290,9 +349,12 @@ sbtranslator-server                      # or: python -m sbtranslator.server --p
 
 ```
 GET  http://127.0.0.1:8765/translate?text=Hello%20world&mode=stupid
+GET  http://127.0.0.1:8765/translate?text=jungle%20gap&memes=max
 POST http://127.0.0.1:8765/translate   {"text": "Hello world", "mode": "stupid", "rarity": 0.8}
 GET  http://127.0.0.1:8765/modes
 ```
+
+`memes` is the 玩梗程度 (none, some, max, or 不用, 适量, 尽量多), and `/modes` lists them.
 
 Responses are JSON: `{"text": ..., "mode": ..., "translation": ...}`, or `{"error": ...}` with
 status 400 for bad input and 502 when the online translator can't be reached. The API allows
@@ -300,3 +362,14 @@ cross-origin requests so browser extensions and web pages can call it.
 
 Installing also adds the commands `sbtranslator` (same as `py translator.py`) and
 `sbtranslator-learn` (same as `py learn.py`).
+
+## Tests
+
+```
+py -m unittest discover tests
+```
+
+They run offline: Google, DeepSeek, Ollama and GitHub are faked, and settings and the bot's
+folder are temporary ones, so your own are never touched. The window tests need tkinter and a
+screen (on Linux, `xvfb-run`), and are skipped without them. GitHub runs them on every push
+and pull request ([Tests workflow](.github/workflows/tests.yml)).
