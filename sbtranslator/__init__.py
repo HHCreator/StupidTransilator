@@ -10,6 +10,7 @@
     sbtranslator.translate("Long time no see", mode="wordy", rarity=1.5)       # stupidest
     sbtranslator.translate("Long time no see", check=True)                     # AI-checked
     sbtranslator.translate("frozen你这个major打得跟teses一样", mode="chinese")  # Chinese in
+    sbtranslator.translate("jungle gap", memes="max")  # with the meme bot's memes (玩梗程度)
     sbtranslator.options("A long sentence ...")    # several versions + other meanings per word
     sbtranslator.suggest_mode("今天天气很好", "stupid")  # ("zh", "chinese"): wrong mode
 
@@ -25,6 +26,7 @@ which function in translator.py does the work for each mode.
         inject.py       the stupid mode: normal translation with stupid words injected
         rules.py        its stupid words that need no table (default meanings, near-synonyms)
         chinese.py      the stupid mode for Chinese input: its English words made stupid
+        bot_memes.py    the memes MemeLearnerBot learned, read from the bot's files
         learn.py        the Wikipedia crawler that learns memes and names
         server.py       the HTTP API for apps in other languages
         overlay.py      the always-on-top window (and the Windows exe)
@@ -55,7 +57,7 @@ MODES = ("stupid", "chinese", "wordy", "plain", "proper", "classical")
 ENGLISH_MODES = ("stupid", "wordy", "plain", "proper", "classical")  # the others take Chinese
 
 
-def translate(text, mode="stupid", rarity=None, check=False):
+def translate(text, mode="stupid", rarity=None, check=False, memes=None):
     """Translate English text to Chinese.
 
     mode: "stupid" (a normal translation with stupid words injected, the default),
@@ -68,13 +70,18 @@ def translate(text, mode="stupid", rarity=None, check=False):
     check: let a local AI model help (see check.py; needs Ollama with the model downloaded).
     In "stupid" mode it writes the sentence around the stupid words; in "wordy" and
     "plain" it picks the best of several versions and smooths it a little.
+    memes: the 玩梗程度 for the memes MemeLearnerBot learned, in the stupid mode: "none",
+    "some" (one a sentence) or "max" (one a clause). None means the one set in the overlay's
+    ⚙ window, or "some" (see bot_memes.py).
 
-    Needs an internet connection. Raises ValueError for an unknown mode and RuntimeError
-    when the online translator can't be reached.
+    Needs an internet connection. Raises ValueError for an unknown mode or 玩梗程度 and
+    RuntimeError when the online translator can't be reached.
     """
     text = clean_text(text)  # ｌｏｌ -> lol, don’t -> don't
     settings.refresh()  # word tables changed in the ⚙ window, maybe by another program
     rarity = settings.rarity() if rarity is None else rarity
+    from .bot_memes import level_of
+    level_of(memes)  # an unknown 玩梗程度 is a mistake, whatever the mode
     # Each mode is one function (check.py wraps them when check=True)
     if mode == "stupid":
         if check:
@@ -99,7 +106,7 @@ def translate(text, mode="stupid", rarity=None, check=False):
     raise ValueError(f"Unknown mode {mode!r}, expected one of {', '.join(MODES)}")
 
 
-def options(text, mode="stupid", rarity=None, check=False, versions=4):
+def options(text, mode="stupid", rarity=None, check=False, versions=4, memes=None):
     """Translate and offer choices, like Google Translate's alternatives. Returns a dict:
 
         translation  the translation (as translate() would give it)
@@ -115,11 +122,13 @@ def options(text, mode="stupid", rarity=None, check=False, versions=4):
                      (both from suggest_mode())
 
     The stupid and wordy modes are random, so the versions really differ; plain, proper
-    and classical give one version.
+    and classical give one version. memes is the 玩梗程度, as in translate().
     """
     text = clean_text(text)
     settings.refresh()
     rarity = settings.rarity() if rarity is None else rarity
+    from .bot_memes import level_of
+    level_of(memes)
     found = _options(text, mode, rarity, check, versions)
     found["language"], found["suggested_mode"] = suggest_mode(text, mode)
     return found

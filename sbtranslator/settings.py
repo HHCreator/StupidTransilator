@@ -13,10 +13,14 @@ It looks like this (every part is optional):
 
     {"rarity": 1.2,
      "words": {"memes": {"g2": "鸡兔"}, "everyday": {"sick": "病态"}},
-     "removed": {"everyday": ["good"]}}
+     "removed": {"everyday": ["good"]},
+     "meme_level": "max",
+     "bot_folder": "G:\\MemeLearnerBot"}
 
 "words" holds your entries, {English: Chinese}, and they win over the built-in ones;
-"removed" lists the built-in entries you deleted. The code that uses a table passes its
+"removed" lists the built-in entries you deleted. "meme_level" is the 玩梗程度 for the
+memes MemeLearnerBot learned (none, some or max; see bot_memes.py), and "bot_folder" the
+bot's folder, when you chose one. The code that uses a table passes its
 built-in entries through merged() (translator._load_memes(), inject.tables(),
 inject.phrases(), phrases.nicknames()), and every change here makes it read the tables
 again, so a change is used from the next translation on, without restarting. A change
@@ -42,6 +46,11 @@ from .translator import LETTERS, MAX_RARITY, TARGET_RARITY
 #   phrases    several words replaced together                       zywoo play -> 载物玩耍
 #   nicknames  a player's Chinese nickname                           zywoo -> 载物
 TABLES = ("memes", "everyday", "acronyms", "phrases", "nicknames")
+
+# The 玩梗程度: how many of the memes MemeLearnerBot learned a stupid sentence gets (see
+# bot_memes.py and meme_pick.py). none: no memes; some: one a sentence; max: one a clause.
+MEME_LEVELS = ("none", "some", "max")
+DEFAULT_MEME_LEVEL = "some"
 
 # Where each table's built-in entries come from, for rows(): (file in data/, the part of the
 # file or None for all of it, label). Later files win, as in the code that reads them: in
@@ -87,7 +96,8 @@ def settings_file():
 def _clean(data):
     """The parts of a loaded settings file that make sense, in the shape the code expects:
     {"rarity": float or None, "words": {table: {English: Chinese}}, "removed": {table:
-    [English, ...]}, "state": {...}}. Anything else is dropped."""
+    [English, ...]}, "state": {...}, "meme_level": a MEME_LEVELS or None, "bot_folder": path
+    or None}. Anything else is dropped."""
     rarity = data.get("rarity")
     words, removed = {}, {}
     for table in TABLES:
@@ -99,9 +109,12 @@ def _clean(data):
         if isinstance(gone, list):
             removed[table] = sorted({clean_english(k) for k in gone if isinstance(k, str)})
     state = data.get("state")
+    level, folder = data.get("meme_level"), data.get("bot_folder")
     return {"rarity": _rarity_value(rarity) if _is_number(rarity) else None,
             "words": words, "removed": removed,
-            "state": state if isinstance(state, dict) else {}}
+            "state": state if isinstance(state, dict) else {},
+            "meme_level": level if level in MEME_LEVELS else None,
+            "bot_folder": folder.strip() if isinstance(folder, str) and folder.strip() else None}
 
 
 def _is_number(value):
@@ -161,7 +174,8 @@ def _store(data):
                "words": {table: dict(sorted(found.items()))
                          for table, found in data["words"].items() if found},
                "removed": {table: gone for table, gone in data["removed"].items() if gone},
-               "state": data["state"]}
+               "state": data["state"], "meme_level": data["meme_level"],
+               "bot_folder": data["bot_folder"]}
     temporary = path + ".tmp"
     with open(temporary, "w", encoding="utf-8") as f:
         json.dump({k: v for k, v in content.items() if v not in (None, {})}, f,
@@ -218,6 +232,37 @@ def set_rarity(value):
         data["rarity"] = value
         _store(data)
     return value
+
+
+def meme_level():
+    """The 玩梗程度 for the memes MemeLearnerBot learned: none, some or max (MEME_LEVELS)."""
+    return _load()["meme_level"] or DEFAULT_MEME_LEVEL
+
+
+def set_meme_level(value):
+    """Save a new 玩梗程度 (one of MEME_LEVELS); returns it. Like the rarity, the default
+    isn't written down. Raises ValueError for another value."""
+    if value not in MEME_LEVELS:
+        raise ValueError(f"玩梗程度只能是 {', '.join(MEME_LEVELS)}，不是 {value!r}")
+    if meme_level() != value:
+        data = _copy()
+        data["meme_level"] = None if value == DEFAULT_MEME_LEVEL else value
+        _store(data)
+    return value
+
+
+def bot_folder():
+    """The MemeLearnerBot folder chosen in the ⚙ window, or None (see bot_memes.py)."""
+    return _load()["bot_folder"]
+
+
+def set_bot_folder(path):
+    """Save the bot's folder (None or "" to look for it again by itself)."""
+    path = path.strip() if path else None
+    if bot_folder() != path:
+        data = _copy()
+        data["bot_folder"] = path or None
+        _store(data)
 
 
 def words(table):
@@ -368,9 +413,10 @@ def restore_entry(table, english):
 
 
 def reset():
-    """Back to the built-in tables and the default rarity (what the overlay remembers stays)."""
+    """Back to the built-in tables, the default rarity and the default 玩梗程度 (what the
+    overlay remembers and the bot's folder stay)."""
     data = _copy()
-    data.update(rarity=None, words={}, removed={})
+    data.update(rarity=None, words={}, removed={}, meme_level=None)
     _store(data)
 
 

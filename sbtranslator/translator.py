@@ -14,7 +14,12 @@ Usage:
     py translator.py --classical "Hello"      # correct translation in Classical Chinese (文言文)
     py translator.py --check "Hello world"    # stupid, then proofread by a local AI (check.py)
     py translator.py --chinese "frozen你好"    # Chinese in, stupid Chinese out (chinese.py)
+    py translator.py --memes max "gg"         # stupid, with as many of the bot's memes as fit
     py translator.py                          # interactive mode, blank line or Ctrl+C to quit
+
+--memes none|some|max is the 玩梗程度 for the memes MemeLearnerBot learned (bot_memes.py):
+none uses none, some one a sentence (the default, or the one set in the ⚙ window), max one
+a clause. Only the stupid mode uses them.
 
 The four modes and the function behind each one:
 
@@ -1043,6 +1048,16 @@ def main():
         i = args.index("--rarity")
         target_rarity = float(args[i + 1])
         del args[i:i + 2]
+    from .bot_memes import LEVEL_NAMES, level_of
+    meme_level = level_of()  # the 玩梗程度 set in the ⚙ window, or some
+    if "--memes" in args:
+        i = args.index("--memes")
+        try:
+            meme_level = level_of(args[i + 1] if i + 1 < len(args) else "")
+        except ValueError:
+            print("--memes takes none, some or max (不用, 适量, 尽量多)")
+            return
+        del args[i:i + 2]
     flags = {"--chinese": "chinese", "--wordy": "wordy", "--plain": "plain",
              "--proper": "proper", "--classical": "classical"}
     mode = next((m for flag, m in flags.items() if flag in args), "stupid")
@@ -1050,8 +1065,11 @@ def main():
     args = [a for a in args if a not in flags and a != "--check"]
     # Every mode goes through the package's translate(), which knows which code does what
     from . import translate as translate_mode
-    convert = lambda text: translate_mode(text, mode=mode, rarity=target_rarity, check=check)
+    convert = lambda text: translate_mode(text, mode=mode, rarity=target_rarity, check=check,
+                                          memes=meme_level)
     label = mode + (f", rarity {target_rarity}" if mode == "wordy" else "")
+    if mode == "stupid":
+        label += f", 玩梗程度 {LEVEL_NAMES[meme_level]}"
     if check:
         label += ", checked by the local AI model"
 
