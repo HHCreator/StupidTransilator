@@ -5,12 +5,18 @@
 Type an English sentence and press Enter (Shift+Enter for a new line); the translation shows
 below. Pick the translation mode with the buttons; Chinese typed in an English mode (or the
 other way round) gets a line under the result offering the right mode, like Google
-Translate's "Translate from". The — button minimizes it to the taskbar,
-and Ctrl+Alt+T hides and shows it from any app (Windows). Needs an internet connection, like the rest of the package.
+Translate's "Translate from". The — button minimizes it to the taskbar, and Ctrl+Alt+T
+hides and shows it from any app (Windows). Needs an internet connection, like the rest of
+the package.
+
+梗：适量 ▾ next to AI 校对 is the 玩梗程度: how many of the memes MemeLearnerBot learned a
+Stupid sentence gets (bot_memes.py, meme_pick.py). A meme in the result can be switched
+like a stupid word, and its menu leads to the ⚙ window's 机器人的梗 page.
 
 The ⚙ button opens the settings window (settings_window.py): your own word table entries,
-the rarity, importing and exporting settings, and a desktop shortcut. The first time the
-exe starts, a line at the bottom offers to put that shortcut on the desktop (shortcut.py).
+the rarity and the 玩梗程度, the bot's memes, importing and exporting settings, and a
+desktop shortcut. The first time the exe starts, a line at the bottom offers to put that
+shortcut on the desktop (shortcut.py).
 
 How it works: the window is built with tkinter, which only allows the main thread to touch
 the window. Anything slow runs in other threads instead, and they never touch the window:
@@ -37,7 +43,9 @@ from tkinter import font as tkfont
 from tkinter import messagebox
 
 from . import MODES, adjust, options, settings, shortcut
+from .bot_memes import LEVEL_NAMES
 from .check import MODEL, NOT_RUNNING, CheckUnavailable, ollama_program, running, start_ollama
+from .meme_pick import TIMED_OUT, head_of
 
 TITLE = "SB Translator"
 POLL_MS = 50  # how often the window checks for results, in milliseconds
@@ -57,6 +65,9 @@ MODE_INFO = {
     "proper": ("Proper", "A normal, correct translation"),
     "classical": ("文言文", "A correct translation in Classical Chinese"),
 }
+# The 玩梗程度 menu: what each level does (settings.MEME_LEVELS, meme_pick.PER_SENTENCE)
+MEME_LEVEL_INFO = {"none": "不用：不玩梗", "some": "适量：每句最多 1 个梗",
+                   "max": "尽量多：每个分句 1 个，一句最多 3 个"}
 # What to call the language the text is in, when it doesn't fit the mode (suggest_mode())
 LANGUAGE_NAMES = {"en": "英文", "zh": "中文", "ja": "日语", "ko": "韩语", "es": "西班牙语",
                   "fr": "法语", "de": "德语", "ru": "俄语", "pt": "葡萄牙语", "it": "意大利语",
@@ -111,6 +122,9 @@ class Overlay:
         self.settings_window = None  # the ⚙ window while it is open (settings_window.py)
         self.check = tk.BooleanVar(value=False)  # proofread by the local AI model (check.py)
         self.starting = False  # the local model (Ollama) is being started
+        # The 玩梗程度 set last time; the ⚙ window's buttons share this variable
+        self.meme_level = tk.StringVar(value=settings.meme_level())
+        self.meme_level.trace_add("write", self._on_meme_level)
 
         families = set(tkfont.families(root))
         self.cjk_font = next((f for f in CJK_FONTS if f in families), "TkDefaultFont")
@@ -217,6 +231,18 @@ class Overlay:
             bg=BG, fg=FG, activebackground=BG, activeforeground=FG, selectcolor=PANEL,
             font=(self.cjk_font, 9), command=self._on_check)
         self.check_box.pack(side="left", padx=(10, 0))
+        # 玩梗程度, for the Stupid mode: how many of the meme bot's memes a sentence gets
+        self.memes_button = tk.Menubutton(
+            actions, bd=0, relief="flat", cursor="hand2", takefocus=False, bg=BG, fg=FG,
+            activebackground=PANEL, activeforeground=FG, disabledforeground=MUTED,
+            font=(self.cjk_font, 9), padx=2)
+        menu = tk.Menu(self.memes_button, tearoff=False, font=(self.cjk_font, 10))
+        for level in settings.MEME_LEVELS:
+            menu.add_radiobutton(label=MEME_LEVEL_INFO[level], value=level,
+                                 variable=self.meme_level)
+        self.memes_button.config(menu=menu)
+        self.memes_button.pack(side="left", padx=(8, 0))
+        self._show_meme_level()
         self.status = tk.Label(actions, bg=BG, fg=MUTED, anchor="e", font=("Segoe UI", 8))
         self.status.pack(side="right", fill="x", expand=True)
 
@@ -276,8 +302,9 @@ class Overlay:
             self.rarity_row.pack(fill="x", pady=(6, 0), before=self.input_frame)
         else:
             self.rarity_row.pack_forget()
-        # The AI check works on the stupid and word-by-word modes
+        # The AI check works on the stupid and word-by-word modes, the bot's memes on Stupid
         self.check_box.config(state="normal" if mode in ("stupid", "chinese", "wordy", "plain") else "disabled")
+        self.memes_button.config(state="normal" if mode == "stupid" else "disabled")
 
     def _show_rarity(self):
         self.rarity_label.config(text=f"Rarity {self.rarity.get():.1f}")
@@ -298,6 +325,17 @@ class Overlay:
             settings.set_rarity(self.rarity.get())
         except OSError as error:
             self._set_status(f"稀有度没存上：{error}", error=True)
+
+    def _show_meme_level(self):
+        self.memes_button.config(text=f"梗：{LEVEL_NAMES[self.meme_level.get()]} ▾")
+
+    def _on_meme_level(self, *args):
+        """The 玩梗程度 changed (here or in the ⚙ window): show it, and save it."""
+        self._show_meme_level()
+        try:
+            settings.set_meme_level(self.meme_level.get())
+        except OSError as error:
+            self._set_status(f"玩梗程度没存上：{error}", error=True)
 
     def _set_status(self, text, error=False):
         """Show a short message next to the buttons (red for errors)."""
@@ -341,9 +379,10 @@ class Overlay:
 
     # -- settings and the desktop shortcut ------------------------------------------------
 
-    def open_settings(self, english=None, chinese=None):
+    def open_settings(self, english=None, chinese=None, meme=None):
         """Open the ⚙ window (or bring it to the front). With english, it shows that word
-        ready to save with chinese, as picked in a word's menu."""
+        ready to save with chinese, as picked in a word's menu; with meme, that one of the
+        bot's memes on the 机器人的梗 page."""
         from .settings_window import SettingsWindow
         if self.settings_window is None:
             self.settings_window = SettingsWindow(self)
@@ -351,6 +390,8 @@ class Overlay:
             self.settings_window.show()
         if english:
             self.settings_window.prefill(english, chinese)
+        elif meme:
+            self.settings_window.show_meme(meme)
 
     def _offer_shortcut(self):
         """The exe asks once whether to put a shortcut on the desktop, and a new copy (a
@@ -466,16 +507,17 @@ class Overlay:
         mode, rarity = self.mode.get(), round(self.rarity.get(), 1)
         check = self.check.get() and mode in ("stupid", "chinese", "wordy", "plain")
         self._set_status("Translating and checking…" if check else "Translating…")
-        threading.Thread(target=self._work, args=(self.request, text, mode, rarity, check),
-                         daemon=True).start()
+        threading.Thread(target=self._work, daemon=True,
+                         args=(self.request, text, mode, rarity, check, self.meme_level.get()),
+                         ).start()
         return "break"  # don't type the newline into the input
 
-    def _work(self, request, text, mode, rarity, check=False):
+    def _work(self, request, text, mode, rarity, check=False, memes=None):
         """Translate in the worker thread and hand the result to the main thread via events."""
         # Runs in a worker thread: the network calls would freeze the window
         started = time.monotonic()
         try:
-            result = options(text, mode=mode, rarity=rarity, check=check)
+            result = options(text, mode=mode, rarity=rarity, check=check, memes=memes)
         except Exception as error:
             self.events.put(("error", request, str(error)))
         else:
@@ -509,6 +551,11 @@ class Overlay:
             tk.Label(self.choices, text=f"AI 没用上，这是普通结果：{result['check_error']}",
                      bg=BG, fg=ERROR, anchor="w", justify="left", wraplength=380,
                      font=(self.cjk_font, 8)).pack(fill="x", pady=(6, 0))
+        if result.get("meme_note") and result["meme_note"] != TIMED_OUT:
+            # No model to confirm or find memes (the status says when it was too slow)
+            tk.Label(self.choices, text=result["meme_note"], bg=BG, fg=MUTED, anchor="w",
+                     justify="left", wraplength=380,
+                     font=(self.cjk_font, 8)).pack(fill="x", pady=(6, 0))
         others = [v for v in result["versions"] if v != result["shown"]]
         if others:
             tk.Label(self.choices, text="其他版本，点一下换上", bg=BG, fg=MUTED, anchor="w",
@@ -520,7 +567,9 @@ class Overlay:
                 label.pack(fill="x", pady=1)
                 label.bind("<Button-1>", lambda e, v=version: self._use_version(v))
         if result["words"]:
-            tk.Label(self.choices, text="点蠢词换个意思", bg=BG, fg=MUTED, anchor="w",
+            memes = any(word.get("meme") for word in result["words"])
+            tk.Label(self.choices, text="点蠢词或梗换个意思" if memes else "点蠢词换个意思",
+                     bg=BG, fg=MUTED, anchor="w",
                      font=(self.cjk_font, 8)).pack(fill="x", pady=(8, 2))
             row = None
             for i, word in enumerate(result["words"]):
@@ -528,8 +577,9 @@ class Overlay:
                     row = tk.Frame(self.choices, bg=BG)
                     row.pack(fill="x")
                 current = result["chosen"].get(word["english"]) or "正常"
-                button = tk.Menubutton(
-                    row, text=f"{word['english']} → {current} ▾", bg=PANEL, fg=FG,
+                button = tk.Menubutton(  # the bot's memes in the accent colour
+                    row, text=f"{word['english']} → {current} ▾", bg=PANEL,
+                    fg=ACCENT_HOVER if word.get("meme") else FG,
                     activebackground=ACCENT, activeforeground=BG, relief="flat", bd=0,
                     cursor="hand2", font=(self.cjk_font, 9), padx=6, pady=2)
                 menu = tk.Menu(button, tearoff=False, font=(self.cjk_font, 10))
@@ -539,7 +589,12 @@ class Overlay:
                 menu.add_separator()
                 menu.add_command(label="正常翻译",
                                  command=lambda w=word["english"]: self._switch(w, None))
-                if " " not in word["english"]:
+                meme = head_of(current) if word.get("meme") else None
+                if meme:
+                    # A meme of the bot's: its cues, or turning it off, in the ⚙ window
+                    menu.add_command(label=f"改「{meme}」的说法或关掉它…",
+                                     command=lambda m=meme: self.open_settings(meme=m))
+                elif " " not in word["english"] and not word.get("meme"):
                     # Keep this meaning for good: the ⚙ window opens with it filled in
                     menu.add_command(label="加进我的词表…", command=lambda w=word["english"]:
                                      self.open_settings(w, self.last["chosen"].get(w)))
@@ -622,7 +677,9 @@ class Overlay:
                         self._show(result["translation"])
                         self._show_choices()
                         ai = " · AI" if result.get("checked") else ""
-                        self._set_status(f"{MODE_INFO.get(mode, (mode,))[0]}{ai} · {seconds:.1f}s")
+                        late = f" · {TIMED_OUT}" if result.get("meme_note") == TIMED_OUT else ""
+                        self._set_status(f"{MODE_INFO.get(mode, (mode,))[0]}{ai} · "
+                                         f"{seconds:.1f}s{late}")
                         if result.get("check_error") == NOT_RUNNING and self.check.get():
                             self._offer_start()  # the local model stopped since AI 校对 was ticked
                     else:

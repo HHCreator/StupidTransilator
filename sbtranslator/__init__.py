@@ -27,10 +27,14 @@ which function in translator.py does the work for each mode.
         rules.py        its stupid words that need no table (default meanings, near-synonyms)
         chinese.py      the stupid mode for Chinese input: its English words made stupid
         bot_memes.py    the memes MemeLearnerBot learned, read from the bot's files
+        meme_cues.py    each of those memes' English cues, written by a model
+        meme_pick.py    the memes that fit a sentence, for the stupid mode
+        meme_model.py   the model asked about memes (DeepSeek flash, else qwen3:14b)
         learn.py        the Wikipedia crawler that learns memes and names
         server.py       the HTTP API for apps in other languages
         overlay.py      the always-on-top window (and the Windows exe)
         settings_window.py  its ⚙ window: your word table entries, rarity, import/export
+        memes_page.py   the ⚙ window's page of the bot's memes
         settings.py     your own settings, saved outside the program folder
         shortcut.py     the desktop shortcut (Windows)
         check.py        proofreading by a local AI model (DeepSeek through Ollama)

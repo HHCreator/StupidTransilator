@@ -17,7 +17,7 @@ these places that has them:
     2. a copy of the bot's files on GitHub (the repository is public), downloaded in the
        background at most every FETCH_HOURS hours into the settings folder
        (%LOCALAPPDATA%\\SBtranslator\\bot)
-    3. the copy the exe comes with (data/bot/, written when the exe is built)
+    3. the copy the exe comes with (data/bot/, put in by build_exe.py with bundle())
 
 A file is read again when it changes, like settings.refresh(): a meme Hao adds in the bot's
 report is used from the next sentence on, without restarting. A meme he turns down or
@@ -33,6 +33,7 @@ default) or max (one a clause, three at most). It is set in the ⚙ window, with
 import json
 import os
 import re
+import shutil
 import sys
 import threading
 import time
@@ -52,7 +53,7 @@ RETRY_MINUTES = 10  # after a download failed, wait this long before trying agai
 FETCH_TIMEOUT = 15  # seconds
 
 # Where the memes came from, as the ⚙ window and the test report say it
-LOCAL, GITHUB_COPY, BUNDLED_COPY = "本机机器人的文件夹", "GitHub 上的", "exe 自带的"
+LOCAL, GITHUB_COPY, BUNDLED_COPY = "本机机器人的文件夹", "GitHub 上的那份", "exe 自带的那份"
 
 LEVELS = settings.MEME_LEVELS
 LEVEL_NAMES = {"none": "不用", "some": "适量", "max": "尽量多"}
@@ -77,7 +78,8 @@ def level_of(value=None):
 
 # -- where the files are ----------------------------------------------------------------------
 
-def _has_memes(folder):
+def is_bot_folder(folder):
+    """Whether folder is the bot's: it has memelearner/data/memes.json."""
     return bool(folder) and os.path.isfile(os.path.join(folder, *MEMES_FILE))
 
 
@@ -86,12 +88,12 @@ def bot_folder():
     folder of its own to look next to, so there it must be chosen in the ⚙ window."""
     for chosen in (settings.bot_folder(), os.environ.get("SBTRANSLATOR_BOT_FOLDER")):
         if chosen:
-            return chosen if _has_memes(chosen) else None
+            return chosen if is_bot_folder(chosen) else None
     if getattr(sys, "frozen", False):
         return None
     parent = os.path.dirname(SOURCE_ROOT)
     return next((os.path.join(parent, name) for name in BOT_FOLDER_NAMES
-                 if _has_memes(os.path.join(parent, name))), None)
+                 if is_bot_folder(os.path.join(parent, name))), None)
 
 
 def github_folder():
@@ -203,7 +205,7 @@ def nicknames():
 
 def source():
     """Where the memes come from, to show: "本机机器人的文件夹 G:\\MemeLearnerBot", "GitHub
-    上的", "exe 自带的", or None when there are none."""
+    上的那份", "exe 自带的那份", or None when there are none."""
     label = files()[0]
     if label == LOCAL:
         return f"{label} {bot_folder()}"
@@ -219,10 +221,11 @@ def _download(url, timeout=FETCH_TIMEOUT):
         return response.read()
 
 
-def fetch():
-    """Download the bot's files from GitHub into github_folder() now. Raises OSError (or
-    ValueError for a memes.json that isn't one) when it fails; then nothing is replaced."""
-    folder = github_folder()
+def fetch(folder=None):
+    """Download the bot's files from GitHub into folder (github_folder()) now. Raises
+    OSError (or ValueError for a memes.json that isn't one) when it fails; then nothing is
+    replaced."""
+    folder = folder or github_folder()
     downloaded = {}
     for path in (MEMES_FILE, NICKNAMES_FILE):
         downloaded[path[-1]] = _download(GITHUB + "/".join(path))
@@ -233,6 +236,21 @@ def fetch():
         with open(temporary, "wb") as f:
             f.write(data)
         os.replace(temporary, os.path.join(folder, name))  # all at once, never half a file
+
+
+def bundle(folder):
+    """Put the bot's two files into folder, for the exe to come with (build_exe.py): copied
+    from the bot's folder on this computer, else downloaded from GitHub now. Returns where
+    they came from, to print. Raises OSError (or ValueError) when neither works."""
+    local = bot_folder()
+    if not local:
+        fetch(folder)
+        return GITHUB
+    os.makedirs(folder, exist_ok=True)
+    for path in (MEMES_FILE, NICKNAMES_FILE):
+        if os.path.isfile(os.path.join(local, *path)):  # an old bot has no nickname table
+            shutil.copyfile(os.path.join(local, *path), os.path.join(folder, path[-1]))
+    return local
 
 
 def _fetch_in_background():

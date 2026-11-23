@@ -49,6 +49,9 @@ MAX_CUES = 6  # cues kept per meme
 MAX_CUE_WORDS = 6
 WRITE_TIMEOUT = 60  # seconds for the model to write one meme's cues
 PAUSE_MINUTES = 10  # when no model answered, wait this long before writing in the background
+# A meme's state, as the ⚙ window lists it (rows())
+USED, INSULT, YOURS, OFF, NOT_USED, NOT_WRITTEN = (
+    "用", "用（骂人的）", "你改的", "关掉了", "模型说不用", "还没写说法")
 NOTE = ("English cues for MemeLearnerBot's memes, written by a model (py -m "
         "sbtranslator.meme_cues). A cue ending in ? needs the model to confirm the meme fits "
         "the sentence; {X} is any player or team.")
@@ -110,6 +113,11 @@ def parse_cue(text):
     text = text.strip()
     words = cue_words(text.rstrip("?？ "))
     return {"en": " ".join(words), "confirm": text.endswith(("?", "？"))} if words else None
+
+
+def split_cues(text):
+    """The cues typed in one box of the ⚙ window, with ; between them."""
+    return [part.strip() for part in re.split(r"[;；\n]+", text) if part.strip()]
 
 
 def fits(template, phrase):
@@ -248,6 +256,41 @@ def missing():
     """The bot's memes that have no cues written for what they mean now."""
     found = entries()
     return [phrase for phrase in bot_memes.memes() if phrase not in found]
+
+
+def check_yours(phrase, texts):
+    """Cues typed for a meme in the ⚙ window: (the ones that work, the ones that don't). A
+    cue works when it is 1 to MAX_CUE_WORDS English words, and has {X} only when the meme is
+    a name and a pattern ({X}同意了: its entry has a template)."""
+    template = (entries().get(phrase) or {}).get("template")
+    good, bad = [], []
+    for text in texts:
+        cue = parse_cue(text)
+        (good if cue and (SLOT not in cue["en"] or template) else bad).append(text)
+    return good, bad
+
+
+def rows():
+    """Every one of the bot's memes as the ⚙ window lists it, in the bot's order:
+    [(phrase, its cues as text, its state)], the state being USED, INSULT, YOURS, OFF,
+    NOT_USED or NOT_WRITTEN."""
+    found, off = entries(), settings.meme_edits()["off"]
+    listed = []
+    for phrase in bot_memes.memes():
+        entry = found.get(phrase)
+        cues = "; ".join(cue_text(c) for c in entry["cues"]) if entry else ""
+        if phrase in off:
+            state = OFF
+        elif entry is None:
+            state = NOT_WRITTEN
+        elif entry["by"] == "你":
+            state = YOURS
+        elif not entry["use"]:
+            state = NOT_USED
+        else:
+            state = INSULT if entry["insult"] else USED
+        listed.append((phrase, cues, state))
+    return listed
 
 
 # -- writing them in the background -------------------------------------------------------------

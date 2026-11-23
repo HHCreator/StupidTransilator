@@ -27,4 +27,4 @@ sbtranslator-overlay = "sbtranslator.overlay:main"
 packages = ["sbtranslator"]
 
 [tool.setuptools.package-data]
-sbtranslator = ["data/*.json", "data/*.txt", "data/*/*.txt", "data/*/*.md"]
+sbtranslator = ["data/*.json", "data/*.txt", "data/*/*.json", "data/*/*.txt", "data/*/*.md"]

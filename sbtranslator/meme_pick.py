@@ -47,6 +47,7 @@ MEANING_LENGTH = 40  # characters of each meme's meaning in the list the model g
 PER_SENTENCE = {"none": 0, "some": 1, "max": 3}  # memes a sentence gets at each 玩梗程度
 PER_CLAUSE = {"none": 0, "some": 1, "max": 1}
 MAX_OPTIONS = 6  # memes offered to switch to, per meme in a sentence
+TIMED_OUT = "梗模型超时"  # the note when the model was too slow (the overlay's status says it)
 CLAUSE_END = set(",.!?;:…，。！？；：")
 
 # Chat words that are never a player's name, though they aren't English words either
@@ -446,10 +447,10 @@ class Planning:
                                turned_down=[c.key for c in self.checks if c not in confirmed],
                                found=[(c.key, c.zh) for c in more])
         elif not self.done.is_set():
-            note = "梗模型超时"
+            note = TIMED_OUT
             self.report["seconds"] = time.monotonic() - self.started
-        elif self.error and (self.checks or self.find):
-            note = f"没有模型确认梗：{self.error}"
+        elif self.error:
+            note = f"没有模型{'确认' if self.checks else '补找'}梗：{self.error}"
         self.report["note"] = note
         return [(c.first, c.last, c.key, c.zh)
                 for c in choose(usable, self.level, self.tokens)], note

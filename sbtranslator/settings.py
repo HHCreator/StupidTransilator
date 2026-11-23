@@ -21,16 +21,18 @@ It looks like this (every part is optional):
 "words" holds your entries, {English: Chinese}, and they win over the built-in ones;
 "removed" lists the built-in entries you deleted. "meme_level" is the 玩梗程度 for the
 memes MemeLearnerBot learned (none, some or max; see bot_memes.py), and "bot_folder" the
-bot's folder, when you chose one. "bot_memes" holds your changes to the bot's memes:
-the ones not to use, and English cues of your own instead of the model's (meme_cues.py). The code that uses a table passes its
-built-in entries through merged() (translator._load_memes(), inject.tables(),
+bot's folder, when you chose one. "bot_memes" holds your changes to the bot's memes: the
+ones not to use, and English cues of your own instead of the model's (meme_cues.py).
+
+The code that uses a table passes its built-in entries through merged() (translator._load_memes(), inject.tables(),
 inject.phrases(), phrases.nicknames()), and every change here makes it read the tables
 again, so a change is used from the next translation on, without restarting. A change
 another program made to the file (the overlay, while the HTTP server runs) is picked up
 the same way: sbtranslator.translate() first checks whether the file changed (refresh()).
 
 export_file() writes your settings to a file to keep or to give to a friend; import_file()
-adds such a file to yours (an old data/*.json table works too).
+adds such a file to yours (an old data/*.json table works too). The bot's folder isn't in
+it: that is only right on this computer.
 """
 
 import json
@@ -462,8 +464,9 @@ def reset():
 # -- import and export ----------------------------------------------------------------------
 
 def export_file(path):
-    """Write your settings (not what the overlay remembers) to path, to keep or share.
-    A rarity you never changed isn't written, so importing keeps the other side's."""
+    """Write your settings (not what the overlay remembers, nor the bot's folder) to path,
+    to keep or share. A rarity or 玩梗程度 you never changed isn't written, so importing
+    keeps the other side's."""
     data = _load()
     content = {"_comment": EXPORT_NOTE, "app": "SBtranslator", "version": 1,
                "words": {table: dict(sorted(found.items()))
@@ -471,6 +474,11 @@ def export_file(path):
                "removed": {table: gone for table, gone in data["removed"].items() if gone}}
     if data["rarity"] is not None:
         content["rarity"] = data["rarity"]
+    if data["meme_level"] is not None:
+        content["meme_level"] = data["meme_level"]
+    edits = {part: found for part, found in data["bot_memes"].items() if found}
+    if edits:
+        content["bot_memes"] = edits
     with open(path, "w", encoding="utf-8") as f:
         json.dump(content, f, ensure_ascii=False, indent=1)
 
@@ -481,7 +489,8 @@ def _read_import(content):
     used to edit by hand: data/stupid_words.json, or a flat {English: Chinese} file like
     data/memes.json (entries with spaces are phrases) or data/nicknames.json ({中文: player})."""
     entries, removals = [], []
-    if isinstance(content.get("words"), dict) or _is_number(content.get("rarity")):
+    if (isinstance(content.get("words"), dict) or _is_number(content.get("rarity"))
+            or "meme_level" in content or isinstance(content.get("bot_memes"), dict)):
         for table, found in (content.get("words") or {}).items():
             if table in TABLES and isinstance(found, dict):
                 entries += [(table, k, v) for k, v in found.items() if isinstance(v, str)]
@@ -511,17 +520,23 @@ def _read_import(content):
 
 
 def import_file(path):
-    """Add the settings in path to yours (its entries win when both have a word). Returns
-    {"words": entries taken, "removed": built-in entries it deletes, "rarity": its rarity or
-    None, "skipped": entries that didn't fit a table}. Raises ValueError for a file that
-    isn't JSON or holds no settings, OSError when it can't be read or saved."""
+    """Add the settings in path to yours (its entries win when both have a word, and its
+    cues when both changed a meme's). Returns {"words": entries taken, "removed": built-in
+    entries it deletes, "rarity": its rarity or None, "skipped": entries that didn't fit a
+    table, "meme_level": its 玩梗程度 or None, "memes": the bot's memes it turns off or
+    gives cues}. Raises ValueError for a file that isn't JSON or holds no settings,
+    OSError when it can't be read or saved."""
     with open(path, encoding="utf-8-sig") as f:  # -sig: Notepad may start the file with a BOM
         content = json.load(f)
     if not isinstance(content, dict):
         raise ValueError("这不是设置文件：里面应该是一个 {…}")
     entries, removals, new_rarity = _read_import(content)
-    if not (entries or removals or new_rarity is not None):
-        raise ValueError("文件里没有能导入的词条或稀有度")
+    memes = _clean({"meme_level": content.get("meme_level"),
+                    "bot_memes": content.get("bot_memes")})
+    level, edits = memes["meme_level"], memes["bot_memes"]
+    if not (entries or removals or new_rarity is not None or level
+            or edits["off"] or edits["cues"]):
+        raise ValueError("文件里没有能导入的词条、稀有度或梗的设置")
     data = _copy()
     original = {table: built_in(table) for table in TABLES}
     taken = skipped = 0
@@ -542,6 +557,11 @@ def import_file(path):
         gone.sort()
     if new_rarity is not None:
         data["rarity"] = _rarity_value(new_rarity)
+    if level:
+        data["meme_level"] = None if level == DEFAULT_MEME_LEVEL else level
+    data["bot_memes"]["off"] = sorted(set(data["bot_memes"]["off"]) | set(edits["off"]))
+    data["bot_memes"]["cues"].update(edits["cues"])
     _store(data)
     return {"words": taken, "removed": deleted, "skipped": skipped,
-            "rarity": data["rarity"] if new_rarity is not None else None}
+            "rarity": data["rarity"] if new_rarity is not None else None,
+            "meme_level": level, "memes": len(set(edits["off"]) | set(edits["cues"]))}

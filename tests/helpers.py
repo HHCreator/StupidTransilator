@@ -9,6 +9,8 @@ import os
 import shutil
 import tempfile
 import unittest
+import urllib.error
+import urllib.request
 from unittest import mock
 
 from sbtranslator import bot_memes, settings
@@ -62,6 +64,10 @@ class Offline(unittest.TestCase):
         environment.start()
         self.addCleanup(environment.stop)
         settings.reload()
+        # Nothing goes online: Google, DeepSeek, Ollama and GitHub fail at once unless a
+        # test fakes them
+        self.patch(urllib.request, "urlopen",
+                   side_effect=urllib.error.URLError("no internet in the tests"))
         self.download = self.patch(bot_memes, "_download",
                                    side_effect=OSError("no internet in the tests"))
         self.patch(bot_memes, "_fetch_in_background")  # no download behind a test's back
