@@ -45,6 +45,7 @@ class Windows(Offline):
         self.overlay = overlay.Overlay(self.root)
 
     def close(self):
+        self.root.update()  # Tk's own idle work (ttk's theme change), before it is gone
         for job in self.root.tk.splitlist(self.root.tk.call("after", "info")):
             self.root.after_cancel(job)  # the overlay's polling, focus and offers
         self.root.destroy()
