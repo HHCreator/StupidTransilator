@@ -11,7 +11,7 @@ from helpers import MEMES, Translating, save_cues
 def found(text, level="some"):
     """The memes meme_pick finds for text: [(English, Chinese)], and the note."""
     tokens, words = inject.tokenize(text)
-    spans, note = meme_pick.start(tokens, words, level).result()
+    spans, note = meme_pick.start(text, tokens, words, level).result()
     return [(key, zh) for first, last, key, zh in spans], note
 
 

@@ -328,9 +328,9 @@ def _meme_spans(text, forced, proper, memes):
     if forced is not None:
         return (t.translate(text) if proper is None else proper,
                 meme_pick.forced(tokens, words, forced), None)
-    planning = meme_pick.start(tokens, words, memes) if memes != "none" else None
+    planning = meme_pick.start(text, tokens, words, memes) if memes != "none" else None
     if proper is None:
-        proper = t.translate(text)
+        proper = t.translate(text)  # while the model, if it is asked, thinks
     spans, note = planning.result() if planning else ([], None)
     return proper, spans, note
 

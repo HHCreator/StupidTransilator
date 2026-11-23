@@ -134,9 +134,12 @@ class Translating(Offline):
 
     def setUp(self):
         super().setUp()
-        from sbtranslator import inject, meme_cues, meme_pick, rules
+        from sbtranslator import inject, meme_cues, meme_model, meme_pick, rules
         from sbtranslator import translator as t
         meme_pick._turns.clear()
+        meme_pick._answers.clear()
+        self.model = self.patch(meme_model, "ask", side_effect=meme_model.Unavailable(
+            "no model in the tests"))
         self.patch(meme_cues, "BUILT_IN_FILE", os.path.join(self.folder, "no built-in cues"))
         self.patch(meme_cues, "fill_in_background")
         meme_cues._entries_cache = None
