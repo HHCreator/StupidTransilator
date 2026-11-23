@@ -81,14 +81,14 @@ def translate(text, mode="stupid", rarity=None, check=False, memes=None):
     settings.refresh()  # word tables changed in the ⚙ window, maybe by another program
     rarity = settings.rarity() if rarity is None else rarity
     from .bot_memes import level_of
-    level_of(memes)  # an unknown 玩梗程度 is a mistake, whatever the mode
+    memes = level_of(memes)  # an unknown 玩梗程度 is a mistake, whatever the mode
     # Each mode is one function (check.py wraps them when check=True)
     if mode == "stupid":
         if check:
             from .check import checked_injected
-            return checked_injected(text)
+            return checked_injected(text, memes=memes)
         from .inject import translate_injected
-        return translate_injected(text)
+        return translate_injected(text, memes=memes)
     if mode == "chinese":
         from .chinese import translate_chinese
         return translate_chinese(text, check=check)
@@ -112,7 +112,8 @@ def options(text, mode="stupid", rarity=None, check=False, versions=4, memes=Non
         translation  the translation (as translate() would give it)
         versions     up to `versions` different whole sentences, the translation first
         words        stupid mode only: [{"english", "chosen", "options"}, ...], each stupid
-                     word with the other stupid meanings it can switch to (see adjust())
+                     word with the other stupid meanings it can switch to (see adjust());
+                     a meme of the bot's has "meme": True, and other memes as options
         proper       the normal translation, to pass to adjust()
         checked      True when the local model was asked (check=True)
         check_error  why the local model couldn't be asked, or None
@@ -120,6 +121,7 @@ def options(text, mode="stupid", rarity=None, check=False, versions=4, memes=Non
         suggested_mode
                      the mode made for that language when it isn't this one, or None
                      (both from suggest_mode())
+        meme_note    stupid mode only: why a meme that fit was left out, or None
 
     The stupid and wordy modes are random, so the versions really differ; plain, proper
     and classical give one version. memes is the 玩梗程度, as in translate().
@@ -128,17 +130,16 @@ def options(text, mode="stupid", rarity=None, check=False, versions=4, memes=Non
     settings.refresh()
     rarity = settings.rarity() if rarity is None else rarity
     from .bot_memes import level_of
-    level_of(memes)
-    found = _options(text, mode, rarity, check, versions)
+    found = _options(text, mode, rarity, check, versions, level_of(memes))
     found["language"], found["suggested_mode"] = suggest_mode(text, mode)
     return found
 
 
-def _options(text, mode, rarity, check, versions):
+def _options(text, mode, rarity, check, versions, memes):
     """What options() returns, without the language."""
     if mode == "stupid":
         from .inject import options as stupid_options
-        return stupid_options(text, versions=versions, check=check)
+        return stupid_options(text, versions=versions, check=check, memes=memes)
     if mode == "chinese":
         from .chinese import options as chinese_options
         return chinese_options(text, versions=versions, check=check)
