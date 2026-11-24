@@ -37,6 +37,7 @@ SBtranslator/
     ├── learn_chat.py  从弹幕里找梗
     ├── server.py      HTTP 接口，给其他语言的程序用
     ├── overlay.py     置顶悬浮窗
+    ├── live_memes.py  悬浮窗的「梗」栏：问 MemeLearnerBot 的 live-say 看直播自己出了哪些梗
     ├── settings_window.py  悬浮窗的 ⚙ 设置窗口：改词表、稀有度，导入/导出设置，放桌面快捷方式
     ├── settings.py    你自己的设置（词条、稀有度），存在程序文件夹外面
     ├── shortcut.py    桌面快捷方式（Windows）
@@ -187,6 +188,7 @@ classDiagram
         -_poll()
         -_build()
         -_offer_shortcut()
+        -_show_memes(answer, rounds)
     }
     class SettingsWindow {
         <<settings_window.py>>
@@ -372,7 +374,8 @@ flowchart TD
 | `sbtranslator/phrases.py` | 弹幕短语表。至少 3 个人发过的短弹幕（8 个字以内）切成词，每个词找英文：先查外号表（载物 → zywoo），再看英文意思里有没有选手 ID（设备 → device），都没有就用最常见的意思（生命 → life），拼成 life game → 生命游戏 这样的候选。`py listen.py --review` 逐个确认，确认的进 `phrases.json` |
 | `sbtranslator/check.py` | 本地模型（`--check`）。默认傻瓜模式里由它造句（见第 4 节）；wordy 和 plain 模式里是校对。傻瓜模式一次生成 4 个版本（共用同一批查询，不多花请求），交给本机 Ollama 里的 DeepSeek-R1 14b，让它挑最好笑、但还读得通的一个，只准增删「的、了、在」这类虚词。程序会核对：去掉虚词和标点后，句子必须和它挑的那个一模一样，否则就不用它的修改。连不上 Ollama 就退回普通结果，`options()` 的 `checked` 和 `check_error` 告诉悬浮窗 AI 有没有用上、为什么没用上。这里从不自己启动 Ollama：悬浮窗在勾上「AI 校对」时（或翻译时发现它停了）先问人，同意了才调用 `start_ollama()` 在后台（不开窗口）启动它 |
 | `sbtranslator/server.py` | HTTP 接口。Python 自带的 `ThreadingHTTPServer` 每来一个请求就开一个线程，交给 `Handler`；`Handler` 只负责把请求转成 `translate()` 调用，再把结果写成 JSON |
-| `sbtranslator/overlay.py` | 悬浮窗。tkinter 只允许主线程碰窗口，所以翻译在工作线程里做，热键在热键线程里等；两者都把结果放进队列 `events`，主线程每 50 毫秒用 `_poll()` 取出来显示。稀有度滑块的值停下 0.6 秒后存进设置；exe 第一次打开时在窗口底部问要不要放桌面快捷方式（`_offer_shortcut()`），记住是哪个 exe 问过的，所以每份 exe 最多问一次，新下载的放在别处的 exe 会问要不要把旧快捷方式改成打开它 |
+| `sbtranslator/overlay.py` | 悬浮窗。tkinter 只允许主线程碰窗口，所以翻译在工作线程里做，热键在热键线程里等；两者都把结果放进队列 `events`，主线程每 50 毫秒用 `_poll()` 取出来显示。稀有度滑块的值停下 0.6 秒后存进设置；exe 第一次打开时在窗口底部问要不要放桌面快捷方式（`_offer_shortcut()`），记住是哪个 exe 问过的，所以每份 exe 最多问一次，新下载的放在别处的 exe 会问要不要把旧快捷方式改成打开它。还有一个梗线程（`live_memes.watch()`）每 2 秒问一次 live-say，有新的就放进 `events`，主线程在窗口底部的「梗」栏显示（`_show_memes()`），见第 9 节 |
+| `sbtranslator/live_memes.py` | 「梗」栏的数据。`fetch()` 问本机的 `http://127.0.0.1:8766/lines?after=N`（不走代理），拿 live-say 第 N 轮以后说的话；`watch()` 在自己的线程里循环问，记着拿到第几轮了；live-say 重开的话（`started` 变了）它的轮次从 1 重新数，就从头拿。问不到就放一个 `("memes off",)`，悬浮窗把「梗」栏收起来，和没装 MemeLearnerBot 时一样 |
 | `sbtranslator/settings_window.py` | ⚙ 设置窗口。上面是稀有度（和悬浮窗用同一个变量，两个滑块一起动），中间是词表（梗和名字、日常意思、缩写、短语、外号，一次看一张，列出内置的和你的，点一行可以改或删），下面是导入/导出、恢复默认和放桌面快捷方式。每次改动立刻存盘、下次翻译就用上 |
 | `sbtranslator/settings.py` | 你自己的设置，存在 `%LOCALAPPDATA%\SBtranslator\settings.json`（不在程序文件夹里，所以下载新版 exe 不会丢）。只存你的改动：`words` 是你的词条（盖过内置的），`removed` 是你删掉的内置词条，`rarity` 是稀有度。读表的地方（`_load_memes()`、`inject.tables()`、`inject.phrases()`、`phrases.nicknames()`）都把内置的表交给 `merged()` 合上你的改动；每次改动后清掉这些缓存，所以不用重启。设置只整个替换、不就地修改，翻译线程读到的永远是完整的一份。`translate()` 每次先看文件的修改时间（`refresh()`），别的程序（比如开着的 HTTP 服务器）改过就重新读。导入认得导出的文件，也认得以前手改的 `stupid_words.json` 和 `memes.json`/`phrases.json`/`nicknames.json` 这种平的表 |
 | `sbtranslator/shortcut.py` | 桌面快捷方式。用 Windows 自己的快捷方式对象（IShellLinkW，资源管理器「创建快捷方式」用的就是它），通过 ctypes 按虚函数表的序号调用，不用装包，也不去启动 PowerShell（exe 启动 PowerShell 容易被杀毒软件当成病毒）。桌面位置用 `SHGetFolderPathW` 问 Windows，桌面被 OneDrive 挪走了也找得到。exe 的快捷方式打开 exe 本身；从源码运行时打开 `pythonw overlay.py`，不弹黑窗口 |
@@ -420,6 +423,7 @@ flowchart TD
 | 把设置带到别的电脑 | ⚙ →「导出设置…」，那边「导入设置…」 |
 | 让 AI 造句或挑版本 | 加 `--check`；换模型设环境变量 `SBTRANSLATOR_MODEL`；版本数是 check.py 里的 `VARIANTS` |
 | 从直播间学梗 | 直播时运行 `py listen.py douyu 6657`，学到的越积越多 |
+| 「梗」栏显示几句、多久问一次 | `overlay.py` 的 `MEMES_SHOWN`；`live_memes.py` 的 `POLL_SECONDS`；live-say 换了端口就设环境变量 `SBTRANSLATOR_MEMES_URL` |
 | 让爬虫学新的页面 | `data/meme_seeds.txt` 加一行，然后运行 `py learn.py` |
 | 单字换成完整的词（次 → 次数） | `STANDALONE_FORMS`（第 3 部分） |
 | 补充 Google 词典没有的意思 | `EXTRA_MEANINGS`（第 3 部分） |
@@ -428,3 +432,5 @@ flowchart TD
 ## 9. 梗机器人
 
 读 B 站找最新游戏梗的梗机器人（以前的 `surf.py` 和 `bilibili.py`）2026 年 11 月搬到了单独的仓库 [MemeLearnerBot](https://github.com/HHCreator/MemeLearnerBot)，两边各自开发，不用再来回合并分支。它的设计说明在那边的 `docs/DESIGN.md`。翻译器要用它学到的梗，就走它给别的程序的入口：`import memelearner`、命令行加 `--json`，或者直接读它的 `memes.json`。
+
+看直播时它还能自己出梗：`py -m memelearner live-say 房间号`（或 `看直播出梗.bat`）一边录 B 站直播间的弹幕，一边每 30 秒左右从弹幕看出比赛在发生什么，用学到的梗说几句弹幕，放在本机的 `http://127.0.0.1:8766/lines` 上。悬浮窗的「梗」栏（`live_memes.py`）每 2 秒去拿一次，显示最新一轮的几句：点一下复制，自己去弹幕框粘贴发出去；鼠标放上去在下面显示这个梗是什么意思。两边都不登录、不发弹幕。接口只听本机，live-say 没开时「梗」栏不出现，所以不用 MemeLearnerBot 的人看到的悬浮窗和以前一样。live-say 那边怎么看场面、怎么挑梗，见 MemeLearnerBot 的 `docs/DESIGN.md` §3.10。

@@ -12,6 +12,10 @@ The ⚙ button opens the settings window (settings_window.py): your own word tab
 the rarity, importing and exporting settings, and a desktop shortcut. The first time the
 exe starts, a line at the bottom offers to put that shortcut on the desktop (shortcut.py).
 
+While MemeLearnerBot's live-say listens to a live room, a 梗 panel at the bottom shows the
+danmu lines it says by itself; click one to copy it (live_memes.py). Without live-say, the
+panel isn't there.
+
 How it works: the window is built with tkinter, which only allows the main thread to touch
 the window. Anything slow runs in other threads instead, and they never touch the window:
 
@@ -22,6 +26,8 @@ the window. Anything slow runs in other threads instead, and they never touch th
                      the local AI model runs, or start it (Overlay._start_ollama)
     hotkey thread    listen_for_hotkey(): waits for Ctrl+Alt+T and puts ("toggle",)
                      in self.events
+    memes thread     live_memes.watch(): asks live-say for new lines every 2 seconds and
+                     puts ("memes", answer, rounds) or ("memes off",) in self.events
 
 self.events is a queue.Queue, which is safe to use from several threads.
 """
@@ -36,13 +42,15 @@ import tkinter as tk
 from tkinter import font as tkfont
 from tkinter import messagebox
 
-from . import MODES, adjust, options, settings, shortcut
+from . import MODES, adjust, live_memes, options, settings, shortcut
 from .check import MODEL, NOT_RUNNING, CheckUnavailable, ollama_program, running, start_ollama
 
 TITLE = "SB Translator"
 POLL_MS = 50  # how often the window checks for results, in milliseconds
 ALPHA = 0.96  # window opacity: slightly see-through
 SAVE_DELAY_MS = 600  # the rarity is saved this long after the slider stops moving
+MEMES_SHOWN = 5  # lines of live-say's newest round shown in the 梗 panel, at most
+MEANING_SHOWN = 60  # characters of a meme's meaning shown when the mouse is on its line
 
 # Colours: window border, background, panels (title bar, inputs), text and highlights
 BORDER, BG, PANEL = "#4a4f6a", "#1c1d26", "#2b2d3a"
@@ -124,6 +132,10 @@ class Overlay:
         root.after(150, self.input.focus_force)
 
         threading.Thread(target=listen_for_hotkey, args=(self.events,), daemon=True).start()
+        self.memes_stop = threading.Event()  # set when the window closes
+        threading.Thread(target=live_memes.watch, args=(self.events, self.memes_stop),
+                         daemon=True).start()
+        root.bind("<Destroy>", lambda e: e.widget is root and self.memes_stop.set())
         root.after(POLL_MS, self._poll)
         root.after(500, self._offer_shortcut)
 
@@ -234,6 +246,24 @@ class Overlay:
         self.choices = tk.Frame(content, bg=BG)
         self.choices.pack(fill="x")
         self.last = None  # the latest translation's text, normal translation and choices
+
+        # The 梗 panel: lines MemeLearnerBot's live-say says by itself as a live room goes
+        # on (live_memes.py). Shown in its slot only while live-say answers (_show_memes)
+        self.memes_slot = tk.Frame(content, bg=BG)
+        self.memes_slot.pack(fill="x")
+        self.memes = tk.Frame(self.memes_slot, bg=BG)
+        self.memes_head = tk.Label(self.memes, bg=BG, fg=MUTED, anchor="w", justify="left",
+                                   wraplength=380, cursor="hand2", font=(self.cjk_font, 9))
+        self.memes_head.pack(fill="x")
+        self.memes_head.bind("<Button-1>", self._fold_memes)
+        self.memes_list = tk.Frame(self.memes, bg=BG)
+        self.memes_list.pack(fill="x")
+        # Under the lines: what the meme under the mouse means, or live-say's trouble
+        self.memes_note = tk.Label(self.memes, bg=BG, fg=MUTED, anchor="w", justify="left",
+                                   wraplength=380, font=(self.cjk_font, 9))
+        self.memes_folded = False
+        self.memes_said = None  # the round whose lines are shown
+        self.memes_trouble = ""  # why live-say said nothing last time, when worth saying
 
         # A question at the bottom, like the desktop shortcut offer (_offer_shortcut)
         self.notice = tk.Frame(content, bg=BG)
@@ -411,6 +441,98 @@ class Overlay:
 
     def hide_notice(self):
         self.notice.pack_forget()
+
+    # -- the 梗 panel (live_memes.py) -----------------------------------------------------
+
+    def _show_memes(self, data, rounds):
+        """live-say answered: show the panel with the lines of its newest round that has
+        any; rounds are the ones that are new since the last answer."""
+        self.memes.pack(fill="x", pady=(10, 0))
+        room = data.get("room") or {}
+        said = live_memes.newest(rounds)
+        if said:
+            self.memes_said = said
+            for widget in self.memes_list.winfo_children():
+                widget.destroy()
+            for line in said["lines"][:MEMES_SHOWN]:
+                self._meme_line(line)
+        last = rounds[-1] if rounds else None
+        if self.memes_said:
+            shown = self.memes_said
+            when = time.strftime("%H:%M", time.localtime(shown.get("at") or time.time()))
+            head = f"梗 · 直播间 {room.get('name', '')} · {when} {shown.get('situation', '')}"
+        else:
+            head = (f"梗 · 直播间 {room.get('name', '')} · 在看弹幕，每 "
+                    f"{data.get('every', 30):g} 秒出几句")
+        self.memes_head.config(text=("▸ " if self.memes_folded else "▾ ") + head)
+        if last:  # a model that can't be asked is worth saying; "the danmu don't tell" isn't
+            why = str(last.get("why", ""))
+            self.memes_trouble = why if not last.get("lines") and why.startswith("没有模型") else ""
+        self._note_memes()
+
+    def _note_memes(self, meaning=None):
+        """The line under the 梗 panel: the meaning of the meme under the mouse, else why
+        live-say can't say anything (in red), else nothing."""
+        text, colour = (meaning, MUTED) if meaning else (self.memes_trouble, ERROR)
+        self.memes_note.config(text=text, fg=colour)
+        if text:
+            self.memes_note.pack(fill="x", pady=(4, 0))
+        else:
+            self.memes_note.pack_forget()
+
+    def _hide_memes(self):
+        """live-say stopped answering: the overlay is as it is without it."""
+        self.memes.pack_forget()
+        # A frame left with nothing packed in it keeps its size; this gives it back
+        self.memes_slot.config(height=1)
+        for widget in self.memes_list.winfo_children():
+            widget.destroy()
+        self.memes_said, self.memes_trouble = None, ""
+
+    def _meme_line(self, line):
+        """One line in the 梗 panel: click it to copy; the mouse on it shows what the meme
+        means under the lines."""
+        row = tk.Frame(self.memes_list, bg=PANEL, cursor="hand2")
+        row.pack(fill="x", pady=(4, 0))
+        text = tk.Label(row, text=line.get("line", ""), bg=PANEL, fg=FG, anchor="w",
+                        justify="left", wraplength=300, font=(self.cjk_font, 11), padx=8, pady=3)
+        text.pack(side="left", fill="x", expand=True)
+        meme = tk.Label(row, text=line.get("meme", ""), bg=PANEL, fg=MUTED,
+                        font=(self.cjk_font, 8), padx=8)
+        meme.pack(side="right")
+        meaning = " ".join(str(line.get("meaning", "")).split())
+        meaning = meaning[:MEANING_SHOWN] + ("…" if len(meaning) > MEANING_SHOWN else "")
+        meaning = f"{line.get('meme', '')}：{meaning}" if meaning else ""
+
+        def light(on):  # the row lights up under the mouse, like the title bar buttons
+            row.config(bg=ACCENT_HOVER if on else PANEL)
+            text.config(bg=ACCENT_HOVER if on else PANEL, fg=BG if on else FG)
+            meme.config(bg=ACCENT_HOVER if on else PANEL, fg=BG if on else MUTED)
+
+        def hover(on):
+            light(on)
+            self._note_memes(meaning if on else None)
+
+        for widget in (row, text, meme):
+            widget.bind("<Button-1>", lambda e, said=line.get("line", ""): self._copy_meme(said))
+            widget.bind("<Enter>", lambda e: hover(True))
+            widget.bind("<Leave>", lambda e: hover(False))
+
+    def _copy_meme(self, said):
+        """Copy a line of the 梗 panel, to paste into the danmu box yourself."""
+        self.root.clipboard_clear()
+        self.root.clipboard_append(said)
+        self._set_status("已复制，粘贴到弹幕框发出去")
+
+    def _fold_memes(self, event=None):
+        """Click the panel's title: hide the lines, or show them again."""
+        self.memes_folded = not self.memes_folded
+        if self.memes_folded:
+            self.memes_list.pack_forget()
+        else:
+            self.memes_list.pack(fill="x", after=self.memes_head)
+        text = self.memes_head.cget("text")
+        self.memes_head.config(text=("▸ " if self.memes_folded else "▾ ") + text[2:])
 
     # -- the local AI model ---------------------------------------------------------------
 
@@ -590,13 +712,18 @@ class Overlay:
         Events: ("toggle",) from the hotkey, ("hotkey", ok) once the hotkey thread starts,
         ("result", request, options dict, mode, seconds), ("adjusted", request, sentence) and
         ("error", request, message) from workers, ("ollama", runs) and ("ollama started",
-        error or None) about the local model.
+        error or None) about the local model, ("memes", answer, rounds) and ("memes off",)
+        from live-say (live_memes.watch()).
         """
         try:
             while True:
                 kind, *args = self.events.get_nowait()
                 if kind == "toggle":
                     self.toggle()
+                elif kind == "memes":
+                    self._show_memes(*args)
+                elif kind == "memes off":
+                    self._hide_memes()
                 elif kind == "hotkey" and not args[0]:
                     self.hotkey_hint.config(text="")  # the hotkey doesn't work, so don't offer it
                 elif kind == "ollama" and not args[0] and self.check.get():
