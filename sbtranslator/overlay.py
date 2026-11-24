@@ -263,7 +263,7 @@ class Overlay:
                                    wraplength=380, font=(self.cjk_font, 9))
         self.memes_folded = False
         self.memes_said = None  # the round whose lines are shown
-        self.memes_trouble = ""  # why live-say said nothing last time, when worth saying
+        self.memes_why = ("", False)  # why live-say said nothing last time, and if it's trouble
 
         # A question at the bottom, like the desktop shortcut offer (_offer_shortcut)
         self.notice = tk.Frame(content, bg=BG)
@@ -465,15 +465,21 @@ class Overlay:
             head = (f"梗 · 直播间 {room.get('name', '')} · 在看弹幕，每 "
                     f"{data.get('every', 30):g} 秒出几句")
         self.memes_head.config(text=("▸ " if self.memes_folded else "▾ ") + head)
-        if last:  # a model that can't be asked is worth saying; "the danmu don't tell" isn't
-            why = str(last.get("why", ""))
-            self.memes_trouble = why if not last.get("lines") and why.startswith("没有模型") else ""
+        if last:
+            why = "" if last.get("lines") else str(last.get("why", ""))
+            if why.startswith("没有模型"):  # a model that can't be asked: always worth saying
+                self.memes_why = (why, True)
+            elif why and not self.memes_said:  # else it would look as if it's still waiting
+                self.memes_why = (f"刚才那次没出：{why}", False)
+            else:  # lines are shown: "the danmu don't tell" this time isn't worth saying
+                self.memes_why = ("", False)
         self._note_memes()
 
     def _note_memes(self, meaning=None):
         """The line under the 梗 panel: the meaning of the meme under the mouse, else why
-        live-say can't say anything (in red), else nothing."""
-        text, colour = (meaning, MUTED) if meaning else (self.memes_trouble, ERROR)
+        live-say said nothing last time (in red when it can't say anything), else nothing."""
+        why, trouble = self.memes_why
+        text, colour = (meaning, MUTED) if meaning else (why, ERROR if trouble else MUTED)
         self.memes_note.config(text=text, fg=colour)
         if text:
             self.memes_note.pack(fill="x", pady=(4, 0))
@@ -487,7 +493,7 @@ class Overlay:
         self.memes_slot.config(height=1)
         for widget in self.memes_list.winfo_children():
             widget.destroy()
-        self.memes_said, self.memes_trouble = None, ""
+        self.memes_said, self.memes_why = None, ("", False)
 
     def _meme_line(self, line):
         """One line in the 梗 panel: click it to copy; the mouse on it shows what the meme
