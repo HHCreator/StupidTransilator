@@ -127,6 +127,11 @@ programs often flag that as a virus. Controls:
   in the title bar disappears and the hotkey is off)
 - ⚙ in the title bar opens the settings (below); a stupid word's menu also has “加进我的词表…”,
   which opens them with that word and its current meaning filled in
+- While [MemeLearnerBot](https://github.com/HHCreator/MemeLearnerBot)'s `live-say` listens to a
+  Bilibili live room, a 梗 panel at the bottom shows the danmu lines it says by itself as the
+  match goes on (below, in The meme bot). Click a line to copy it, then paste it into the danmu
+  box yourself; the mouse on a line shows what its meme means, and clicking the panel's title
+  folds it. Without `live-say` the panel isn't there
 
 It stays above normal windows, but a game in exclusive fullscreen can hide it (use windowed
 or borderless mode). The exe keeps the round trip cache in `%LOCALAPPDATA%\SBtranslator`.
@@ -226,6 +231,13 @@ The meme bot, which reads Bilibili by itself for the newest gaming memes, has it
 now: [MemeLearnerBot](https://github.com/HHCreator/MemeLearnerBot), so it is developed
 separately from the translator. Its README says how an app gets the memes it learned:
 `import memelearner`, its command line with `--json`, or its `memes.json` file.
+
+It also says memes by itself while you watch a live room: `py -m memelearner live-say 6` (or
+its `看直播出梗.bat`) listens to the room's danmu and, every 30 seconds or so, works out what is
+going on in the match and says a few danmu lines with the memes it learned that fit. The
+overlay shows them in its 梗 panel (above): it asks `http://127.0.0.1:8766/lines` every 2
+seconds, on this computer only (`sbtranslator/live_memes.py`; set `SBTRANSLATOR_MEMES_URL` if
+`live-say` runs with another `--port`). Nothing sends a danmu: you pick a line and send it.
 
 ## Proofreading with a local AI model
 
